@@ -110,23 +110,23 @@ Additionally, you should describe, implement, and evaluate at least three differ
 
 ### Step 5.2: Implement Basic Operations for Experiments
 
-- [ ] Create minimal implementation of MemTable using Skip List
-- [ ] Implement basic SSTable format and serialization
-- [ ] Develop simple put operation without optimizations
-- [ ] Implement basic get operation without Bloom filters
-- [ ] Add I/O tracking for performance measurement
-- [ ] Create simple test harness for experiments
+- [x] Create minimal implementation of MemTable using Skip List
+- [x] Implement basic SSTable format and serialization
+- [x] Develop simple put operation without optimizations
+- [x] Implement basic get operation without Bloom filters
+- [x] Add I/O tracking for performance measurement
+- [x] Create simple test harness for experiments
 
 ### Step 5.3: Conduct Performance Experiments
 
-- [ ] Design experiment for unoptimized put operation
-  - [ ] Measure I/O operations for different data sizes
-  - [ ] Track write amplification
-  - [ ] Analyze performance bottlenecks
-- [ ] Design experiment for unoptimized get operation
-  - [ ] Measure I/O operations for different data sizes
-  - [ ] Track read latency across levels
-  - [ ] Analyze performance without Bloom filters
+- [x] Design experiment for unoptimized put operation
+  - [x] Measure I/O operations for different data sizes
+  - [x] Track write amplification
+  - [x] Analyze performance bottlenecks
+- [x] Design experiment for unoptimized get operation
+  - [x] Measure I/O operations for different data sizes
+  - [x] Track read latency across levels
+  - [x] Analyze performance without Bloom filters
 - [ ] Document experimental results and analysis
 - [ ] Prepare visualizations for presentation
 
