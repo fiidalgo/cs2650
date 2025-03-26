@@ -1,369 +1,187 @@
-# LSM-Tree Key-Value Store Implementation Plan
-
-## Project Goal
-
-The goal of the project is to build a modern write-optimized NoSQL key-value store. The system will be based on a state-of-the-art variatn of LSM-tree (Log Structured Merge tree) design. There are two parts in the project. In the first part, you will build a basic single thread key-value store that will include all major design components as in state-of-the-art key-value stores. In the second part, you will extend the design to support multiple threads and be able to process multiple queries in parallel, while utilizing all cores of a modern server machine.
-
-## Project Description
-
-The project is divided into two parts. The first part is about designing the basic structure of an LSM-tree for reads and writes, while the second part is about designing and implementing the same functionality in a parallel way so we can support multiple concurrent reads and writes. Each part will have a first milestone: a design document. Here you will discuss your design and development strategy. Template can be found in `./docs/design-doc-template.pdf`. The minimum design should align with the LSM-tree design specifications mentioned in Monkey, which can be found in `./docs/monkey.pdf`, including the following:
-
-- Every level can follow either of the following merge policies: leveling, tiering, or lazy leveling.
-- Each level includes bloom filter(s) with optimized bits per entry to determine if a key is not contained in the level.
-- Each level includes fence pointers to allow page or block access within a run.
-- You may alter the design (e.g. customizing merge policies, varying lboom filter sizes, etc.) in an effort to achieve faster reads or faster writes, but they should not revert to simpler designs (e.g. making a level just a plain array).
-- The workload generator that you would be using can generate negative keys and values as well. So you need to support both signed and unsigned key-value pairs.
-- The system should run as two parts. First is a key-value database server which manages the data and waits to receive queries. Second is a lightweight query client which can communicate queries with said server. Multiple clients should be able to connect to the key-value database server.
-- The database server will respond to queries that adhere to the Domain Specific Language (DSL) which can be found in `./docs/systems-project-specs.pdf`. This allows it to behave as a bare bones key-value store.
-- The database server should persist data to a specified data directory.
-- If the data directory has contents at startup, the system should load any relevant data in, preparing or reconstructing any additional structures if necessary, for instance, fence pointers, Bloom filters, etc.
-
-Note: During compaction, as the number of levels increase, merging the content of the deeper levels of the tree will demand more memory. An alternative is to use external sorting in which data is brought into memory in chunks, sorted, and written to a temporary file. Then, the sorted files are merged and written back to disk. However, this process is still slow due to high I/O cost of moving the entire data (residing at the two levels) to memory and writing to disk. A commonly used approach is a partial compaction in which one or more files of level-L and level-(L+1) are removed. This reduces the overall data movement cost thereby being significantly faster and less memory-intensive.
-
-**Additional Design Considerations:**
-
-Additionally, you should describe, implement, and evaluate at least three different optimizations that support the performance requirements. The purpose of the optimizations is to approach improving the system design and performance from both a theoretical and empirical approach. These may include but are not limited to altering the size ratio between the levels, the choice of the buffer data structure design, whether each level will consist of one or more structures (e.g. sorted arrays), how merging happens and when it is triggered, and many more design decisions that are open to you.
-
-## Suggested Timeline
-
-1. Familiarize with LSM-Trees and variations
-1. Design document: Design of basic LSM-Tree and development plan, initial testing and development
-1. Development of basic LSM-Tree
-1. Design document: Describe plan for parallelization
-1. Refining LSM-Tree and parallelization
-1. finalizing development of parallel LSM-Tree
-
-## Step 1: Understand LSM-Tree Fundamentals
-
-- [x] Study the basic structure and concepts of LSM-trees
-- [x] Research existing implementations (LevelDB, RocksDB, Cassandra)
-- [x] Understand core operations (writes, reads, deletes, merges)
-- [x] Learn about Bloom filters and fence pointers
-- [x] Research merge policies (leveling, tiering, lazy leveling)
-
-## Step 2: Understand Performance Characteristics
-
-- [x] Study read vs. write tradeoffs in LSM-trees
-- [x] Research size ratio optimization between levels
-- [x] Understand space amplification issues
-- [x] Research merge/compaction strategies
-
-## Step 3: Review Project Requirements
-
-- [x] Review the DSL specifications
-- [x] Understand workload generator and test framework
-- [x] Study required API endpoints (`put`, `get`, `range`, `delete`, `load`, `print stats`)
-
-## Step 4: Design Document - Basic LSM-Tree
-
-### Step 4.1: Design In-Memory Buffer (L0)
-
-- [x] Choose appropriate data structure (skiplist, red-black tree, B+ tree)
-- [x] Define memory layout and organization
-- [x] Design buffer flushing mechanism
-- [x] Plan for buffer size thresholds
-
-### Step 4.2: Design On-Disk Components
-
-- [x] Define file format for persisted runs
-- [x] Design level organization with merge thresholds
-- [x] Plan run structure and key range management
-- [x] Design file management system
-
-### Step 4.3: Design Core Operations
-
-- [x] Design write path (put, update, delete)
-- [x] Design read path (get, range)
-- [x] Design merge/compaction process
-- [x] Plan for delete marker handling
-
-### Step 4.4: Design Optimization Components
-
-- [x] Design Bloom filter implementation with size optimization
-- [x] Design fence pointers for efficient searches
-- [x] Plan for at least three performance optimizations
-  - Possible options:
-    - Variable Bloom filter bits per level
-    - Optimized merge policy selection per level
-    - Partial compaction strategies
-    - Smart level size ratio configuration
-    - Caching strategies
-
-### Step 4.5: Document Design Decisions
-
-- [x] Create diagram of overall architecture
-- [x] Document data structures and algorithms
-- [x] Define complexity analysis for operations
-- [x] Document expected performance characteristics
-- [x] Create pseudocode for key operations
-
-## Step 5: Midway Check-in Preparation
-
-### Step 5.1: Finalize Design Document
-
-- [ ] Ensure design document is complete with all required sections
-- [ ] Limit document to maximum 3 pages focusing on core design
-- [ ] Include detailed data layout description
-- [ ] Document dictionary operations (put, get, range, delete)
-- [ ] Include pseudocode, graphics, and complexity analysis
-- [ ] Review and refine document for clarity and completeness
-
-### Step 5.2: Implement Basic Operations for Experiments
-
-- [x] Create minimal implementation of MemTable using Skip List
-- [x] Implement basic SSTable format and serialization
-- [x] Develop simple put operation without optimizations
-- [x] Implement basic get operation without Bloom filters
-- [x] Add I/O tracking for performance measurement
-- [x] Create simple test harness for experiments
-
-### Step 5.3: Conduct Performance Experiments
-
-- [x] Design experiment for unoptimized put operation
-  - [x] Measure I/O operations for different data sizes
-  - [x] Track write amplification
-  - [x] Analyze performance bottlenecks
-- [x] Design experiment for unoptimized get operation
-  - [x] Measure I/O operations for different data sizes
-  - [x] Track read latency across levels
-  - [x] Analyze performance without Bloom filters
-- [ ] Document experimental results and analysis
-- [ ] Prepare visualizations for presentation
-
-### Step 5.4: Prepare Presentation
-
-- [ ] Create slides covering basic design
-- [ ] Include architecture diagrams and operation flows
-- [ ] Present experimental results with analysis
-- [ ] Outline initial ideas for concurrent execution
-  - [ ] Discuss potential concurrency models
-  - [ ] Identify thread-safety considerations
-  - [ ] Present preliminary synchronization strategies
-- [ ] Prepare for Q&A and feedback
-
-## Step 6: Implementation of Basic LSM-Tree Design
-
-### Step 6.1: Set Up Project Infrastructure
-
-- [ ] Create project structure and build system
-- [ ] Set up testing framework
-- [ ] Implement basic logging and debugging infrastructure
-- [ ] Create client-server architecture as specified
-
-### Step 6.2: Implement In-Memory Buffer
-
-- [ ] Implement chosen data structure for buffer
-- [ ] Implement buffer operations (insert, lookup, delete)
-- [ ] Add support for buffer size tracking
-- [ ] Implement buffer flush mechanism
-
-### Step 6.3: Implement Disk Components
-
-- [ ] Create file format for persisted runs
-- [ ] Implement serialization/deserialization
-- [ ] Create level management system
-- [ ] Implement catalog and manifest for file tracking
-
-### Step 6.4: Implement Core Operations
-
-- [ ] Implement put operation
-- [ ] Implement get operation
-- [ ] Implement range query operation
-- [ ] Implement delete operation with tombstone markers
-- [ ] Implement load operation for bulk loading
-
-### Step 6.5: Implement Optimizations
-
-- [ ] Implement Bloom filters
-- [ ] Implement fence pointers
-- [ ] Implement merging/compaction logic
-- [ ] Add the three planned performance optimizations
-
-### Step 6.6: Implement DSL Interface
-
-- [ ] Create parser for command syntax
-- [ ] Implement command handlers
-- [ ] Add stats command functionality
-- [ ] Set up client-server communication
-
-### Step 6.7: Testing and Validation
-
-- [ ] Create unit tests for components
-- [ ] Develop integration tests
-- [ ] Test with workload generator
-- [ ] Validate correctness with various workloads
-- [ ] Benchmark performance
-
-## Step 7: Design Document - Parallelization
-
-- [ ] Design concurrency model
-- [ ] Plan thread management
-- [ ] Design concurrent access to buffer
-- [ ] Design concurrent merging strategies
-- [ ] Plan for synchronization mechanisms
-- [ ] Document expected performance scaling
-
-## Step 8: Implementation of Parallel LSM-Tree
-
-### Step 8.1: Implement Concurrency Infrastructure
-
-- [ ] Add thread pool management
-- [ ] Implement read-write locks
-- [ ] Set up thread-safe data structures
-- [ ] Create synchronization primitives
-
-### Step 8.2: Implement Concurrent Operations
-
-- [ ] Make buffer thread-safe
-- [ ] Implement concurrent reads
-- [ ] Implement concurrent writes
-- [ ] Handle concurrent merges/compactions
-
-### Step 8.3: Implement Optimizations for Concurrency
-
-- [ ] Add lock-free optimizations where possible
-- [ ] Implement partitioning strategies
-- [ ] Optimize for multi-core scaling
-- [ ] Balance read/write performance under concurrency
-
-### Step 8.4: Testing and Validation
-
-- [ ] Test with multiple concurrent clients
-- [ ] Validate correctness under concurrency
-- [ ] Perform stress testing
-- [ ] Measure scaling with number of cores
-- [ ] Benchmark with different workload patterns
-
-## Step 9: Finalization and Optimization
-
-### Step 9.1: Performance Tuning
-
-- [ ] Profile code for bottlenecks
-- [ ] Optimize critical paths
-- [ ] Fine-tune parameters
-- [ ] Calibrate to meet performance targets
-
-### Step 9.2: Prepare Final Deliverables
-
-- [ ] Complete implementation with documentation
-- [ ] Prepare final report
-  - Abstract
-  - Introduction
-  - Design section
-  - Experimental section
-  - Conclusion
-- [ ] Create visualization tools for demonstration
-- [ ] Prepare demo script
-
-### Step 9.3: Conduct Experiments
-
-- [ ] Test with varying data sizes (100MB-10GB)
-- [ ] Test with different data distributions
-- [ ] Evaluate read vs. write ratios
-- [ ] Test with different buffer sizes
-- [ ] Evaluate level ratio impacts
-- [ ] Measure multi-threading scaling
-- [ ] Test with varying client counts
-- [ ] Document all findings
-
-## Detailed Implementation Checklist for Core Components
-
-### In-Memory Buffer (L0)
-
-- [ ] Choose data structure (e.g., skiplist)
-- [ ] Implement key-value insertion
-- [ ] Implement key lookup
-- [ ] Implement range scan
-- [ ] Add size tracking
-- [ ] Implement flush threshold detection
-- [ ] Create serialization for disk persistence
-
-### On-Disk Structure
-
-- [ ] Define file format with headers
-- [ ] Implement run creation from buffer
-- [ ] Add key range tracking per file
-- [ ] Implement file management
-- [ ] Create catalog for tracking runs and levels
-- [ ] Implement manifest for recovery
-
-### Merge/Compaction
-
-- [ ] Implement trigger conditions
-- [ ] Create merge policy implementations
-  - [ ] Leveling (one run per level)
-  - [ ] Tiering (multiple runs per level)
-  - [ ] Lazy leveling (hybrid approach)
-- [ ] Implement sort-merge algorithm
-- [ ] Handle tombstone markers during merge
-- [ ] Implement background merging
-
-### Optimizations
-
-- [ ] Bloom filters
-  - [ ] Implement filter creation
-  - [ ] Optimize bits-per-entry
-  - [ ] Add level-specific tuning
-- [ ] Fence pointers
-  - [ ] Implement for run partitioning
-  - [ ] Optimize memory usage
-- [ ] Custom optimizations (implement at least three)
-  - [ ] Optimization 1: **\_**
-  - [ ] Optimization 2: **\_**
-  - [ ] Optimization 3: **\_**
-
-### Parallel Processing
-
-- [ ] Thread pool for background operations
-- [ ] Concurrent buffer access
-- [ ] Parallel merge implementation
-- [ ] Read/write concurrency control
-- [ ] Synchronization for catalog updates
-
-### Client-Server Architecture
-
-- [ ] Implement server listener
-- [ ] Create client connection handling
-- [ ] Implement request parsing
-- [ ] Set up response formatting
-- [ ] Add multi-client support
-
-### CS265 DSL Implementation
-
-- [ ] Put command (`p [key] [value]`)
-- [ ] Get command (`g [key]`)
-- [ ] Range command (`r [start] [end]`)
-- [ ] Delete command (`d [key]`)
-- [ ] Load command (`l [filepath]`)
-- [ ] Stats command (`s`)
-
-## Experimental Evaluation Plan
-
-### Performance Metrics
-
-- [ ] Throughput (operations per second)
-- [ ] Latency (ms per operation)
-- [ ] I/O counts (reads/writes)
-- [ ] Cache behavior
-- [ ] Space amplification
-- [ ] Write amplification
-
-### Experiment Dimensions
-
-- [ ] Data size (100MB to 10GB)
-- [ ] Data distribution (uniform vs skewed)
-- [ ] Query distribution (uniform vs skewed)
-- [ ] Read-write ratio (10:1 to 1:10)
-- [ ] Buffer size (4K to 100MB)
-- [ ] Level size ratio (2 to 10)
-- [ ] Thread count (1 to max cores)
-- [ ] Client count (1 to 64)
-
-### Analysis Tasks
-
-- [ ] Generate graphs for each dimension
-- [ ] Analyze tradeoffs between configurations
-- [ ] Document optimization effects
-- [ ] Measure scaling behavior
-- [ ] Compare merge policies
-- [ ] Evaluate overall system performance
+# Midway Check-in LSM-Tree, Experiments, and Future Plan for Phase 2
+
+## 1. How the Current LSM-Tree Works
+
+### 1.1 Overview
+My LSM-Tree is a **write-optimized key-value store** that defers on-disk writes by first buffering them in memory. When the in-memory portion gets too large, it is flushed to disk as an immutable file. My LSM-Tree currently does not perform advanced compactions or optimizations like Bloom filters; I just have a single “Level 0” for on-disk files.
+
+### 1.2 In-Memory Storage: The MemTable
+- **Skip List Structure**: The MemTable is basically a skip list. A skip list is like a linked list but better: each node has multiple “forward pointers” that let you skip many elements at once, making insert/lookup faster than a plain linked list.
+- **Insertions**: When you `put(key, value)`, the code inserts `(key, value, deleted=false)` into the skip list. If the key already exists there, the old value is replaced.
+- **Deletions**: A `delete(key)` works the same way, but `deleted=true` is set as a tombstone. That way it's clear that the key is “logically removed.”
+- **Size Threshold**: I track how many entries or total memory the MemTable uses. If it grows beyond 4MB or 1 million entries (whichever comes first), it is marked `immutable`. An immutable MemTable can no longer be changed.
+
+### 1.3 Flushing MemTable to an SSTable
+- **Background Thread**: When a MemTable becomes immutable, the background thread eventually writes it to disk as a Sorted String Table (SSTable). While it’s flushing, a brand-new MemTable is created to keep servicing new writes immediately.
+- **SSTable Format**: Each SSTable on disk has:
+  - A small **header**: format version, how many items are in it, the minimum key, the maximum key.
+  - A **body**: each entry is `(key, value, is_deleted)`. It’s sorted by key.
+- **Level 0 Only**: Right now, all SSTables end up in “Level 0.” I do not yet merge older SSTables further down or combine them.
+
+### 1.4 On-Disk Reads
+- **Get Queries**:
+  1. Look in the active MemTable (the skip list in memory).
+  2. Look in any immutable MemTables that haven’t been flushed yet (or are flushing).
+  3. Look through the SSTables on disk in reverse chronological order (i.e., newest file first).
+     - **Linear Search**: Currently, read from start to finish in that SSTable file until you either find the matching key or surpass it.
+  - If you find a `deleted=true` tombstone, that means the key doesn’t exist.
+- **Range Queries**:
+  - Gather all keys in [start, end) from the active MemTable, then from each immutable MemTable, then from each SSTable.
+  - Combine them, sort them by key, and remove duplicates so that the newest version of each key is kept.
+
+### 1.5 Basic Architecture Recap
+1. New writes go into an in-memory skip list (MemTable).
+2. If that skip list grows too large, it’s flushed to disk as an SSTable in Level 0.
+3. Reads check memory first, then scan disk files in order to find the requested data.
+4. Currently, I do not do multi-level compaction or bloom filters, so there are higher read costs as more SSTables are accumulated.
+
+---
+
+## 2. How the Experiments Work
+
+I've done two major baseline experiments using Python scripts:
+
+### 2.1 PUT Experiment
+- **Script**: `experiment_put.py`
+- **Procedure**:
+  1. **Generate a file** of `(key, value)` lines for a certain number of records (e.g., 100k, 200k, 500k, 1M).
+  2. **Start LSM-Tree server** with an empty data folder.
+  3. **Send a `load` command** to the server pointing to the generated file. That triggers the system to do a bunch of `put` operations internally.
+  4. Once loading finishes, the script queries the server for stats (to see read/write operations, etc.).
+  5. **Record the time** it took to do all the puts and the I/O usage (read/writes, bytes).
+  6. **Repeat** for different record counts, storing results in a CSV.
+
+- **Goal**: Measure how the LSM-Tree ingestion time scales as you increase the data size, and how many bytes of I/O are written.
+
+### 2.2 GET Experiment
+- **Script**: `experiment_get.py`
+- **Procedure**:
+  1. Start the LSM-Tree server with an **already loaded** dataset of around 1 million keys (from prior runs, or loaded once).
+  2. For each run, pick a certain number of random `get` queries (e.g. 1k, 2k, 5k, 10k).
+  3. Measure the total time it takes to process all those GETs. 
+  4. Record the read I/Os. 
+  5. Results get appended to another CSV.
+
+- **Goal**: Determine how read time and read I/Os scale with the number of random queries. Currently linear scans in multiple SSTables, so read amplification can get large.
+
+---
+
+## 3. Step-by-Step Project Plan for the Remaining Work
+
+Below is a plan aligned with the **project specifications** (including the final deliverable of a working LSM-tree, the final report with experiments on each operator, and 3 additional optimizations).
+
+### 3.1 Optimization 1: Implement Multi-Level Compaction
+**What**: Instead of keeping all SSTables in Level 0, introduce multiple levels (L0, L1, L2, ...) with a size ratio. When L0 accumulates too many files, or too much data, merge them into L1, and so on.
+
+1. **Design**:
+   - Pick a compaction policy (like size-tiered or level-tiered).
+   - For example, if L1 is allowed to be 10x bigger than L0, once L0’s total size is ~X, pick a run of files from L0 and merge them into a new set of files in L1.
+2. **Implementation**:
+   - Add code to track how many SSTables or how many bytes are in L0.
+   - When thresholds are exceeded, do a sort merge of the L0 data with L1 data that has overlapping keys. Write out new sorted SSTables for L1, remove the old ones from L0 and L1.
+3. **Benefit**:
+   - This will drastically reduce the number of separate SSTables. `get` queries will have fewer files to scan, especially if older data keeps consolidating in deeper levels.
+
+**Experiment**:
+- Re-run GET queries after compaction is done. Should see fewer I/Os for point lookups because data is less scattered.
+
+### 3.2 Optimization 2: Add Bloom Filters to Each SSTable
+**What**: A Bloom filter is a space-efficient data structure that helps you quickly decide whether a key cannot be in a file, avoiding needless disk reads.
+
+1. **Design**:
+   - When you flush or compact data to form an SSTable, build a Bloom filter for all keys in that table. Store it on disk (or partially in memory if you like).
+   - On a `get(key)`, check the Bloom filter first. If it says “key not present,” skip that SSTable altogether.
+2. **Implementation**:
+   - Implement a classic Bloom filter: choose the filter size, number of hash functions, etc.
+   - Integrate it in the read path. If the filter returns “definitely not present,” do not linear-scan that SSTable’s data.
+3. **Benefit**:
+   - Cut out many unnecessary file scans, especially when the key truly isn’t in that table, drastically lowering read cost.
+
+**Experiment**:
+- Compare read performance and I/O with Bloom filters vs. without. Show that for random queries that do not exist in the SSTable, skip scanning and gain speed.
+
+### 3.3 Optimization 3: Implement Fence Pointers for Faster On-Disk Search
+**What**: Fence pointers store partial indexing within each SSTable, typically storing the min key for each data block (or some chunk). You can then binary-search these pointers to jump near your key and do a narrower search on disk.
+
+1. **Design**:
+   - Decide on block size (e.g., 4KB or 8KB).
+   - For every block, record the minimum key in that block. Keep these min keys in a small, in-memory array or separate structure. 
+   - On a `get(key)`, do a binary search on fence pointers to find the right block, then read only that block (or a small range of blocks).
+2. **Implementation**:
+   - Adjust SSTable format to break data into blocks. Possibly store the fence pointers in the file’s header or a separate index region at the end.
+   - On reading, do the pointer-based search instead of scanning everything linearly.
+3. **Benefit**:
+   - With fence pointers, the time to locate a key is reduced from linear in the entire file to linear in the block size. 
+
+**Experiment**:
+- Show improved read times and reduced I/O compared to full-file scans. Possibly combine with Bloom filters for even better performance.
+
+### 3.4 Concurrency
+
+**Goal**: Allow background flushes and compactions to run in parallel with user-facing queries (GET, PUT, DELETE, RANGE). Possibly run multiple merges/flushes at once if hardware permits.
+
+#### 2.4.1 Concurrency Architecture
+
+1. **Active/Immutable MemTable Locking**  
+   - **Design**: Use a lightweight mutex to protect transitions from an active MemTable to an immutable one.  
+   - **Implementation**: 
+     - When the MemTable crosses the threshold, the main thread marks it immutable and spawns a flush task. 
+     - A fresh active MemTable is allocated immediately, so user PUTs don’t block for the flush.
+
+2. **SSTable Manifest (Versioning)**  
+   - **Design**: Maintain a “manifest” or “version” object that describes all levels, files, and metadata at a point in time.  
+   - **Implementation**: 
+     - Each time a flush or compaction finishes writing new files, it updates the manifest atomically. 
+     - Older files are marked “obsolete” but remain accessible to queries that started under the previous version. 
+     - Queries pick up the newest manifest version available at the time the query starts.
+
+3. **Thread Pool for Background Tasks**  
+   - **Design**: Create a pool of worker threads (e.g., sized to CPU cores) that can accept tasks for flushing or compaction.  
+   - **Implementation**:
+     1. **Task Queue**: A shared queue of tasks (e.g. “flush MemTable M,” “compact L0 → L1,” etc.). 
+     2. **Workers**: Each worker thread loops, pulling tasks and executing them. 
+     3. **Synchronization**: 
+        - Use condition variables or semaphores to notify threads when new tasks arrive.  
+        - Use a global mutex for the queue itself.
+
+4. **Locking Strategy**  
+   - For compactions, you typically need read access to the old files and write access to the new ones.  
+   - For queries, you want to read a stable snapshot of which files are valid.  
+   - **Implementation**:  
+     - A small lock for modifying the manifest.  
+     - A “copy-on-write” or “versioning” approach so queries see a stable list of files.  
+     - The actual on-disk merges happen in the background worker. It merges data into new files, then does an atomic pointer swap to update the manifest.
+
+#### 2.4.2 Concurrency Benefits and Pitfalls
+
+- **Benefits**: 
+  - Flushes and compactions no longer stall user queries; throughput can increase significantly on multi-core systems. 
+  - The main server thread can quickly handle new `put` or `get` commands while background merges proceed.
+
+- **Pitfalls**: 
+  - Implementation complexity is higher (more locks, potential for race conditions). 
+  - Must ensure a consistent read snapshot and that old files aren’t deleted until no queries are using them.
+
+#### 2.4.3 Concurrency Testing
+1. **Stress Tests**: Run large-scale inserts while also issuing random GET queries to confirm that queries remain correct and don’t time out.  
+2. **Failure Scenarios**: If a flush or compaction fails, ensure the system can recover gracefully (e.g., ignore partial merges).
+
+
+### 3.5 Final Integration, Testing, and Performance Experiments
+1. **Full Testing**: Ensure correctness of put/get/delete/range across all levels. 
+2. **Performance**: 
+   - Provide final metrics on read throughput, write throughput, and space usage. 
+   - Evaluate each major optimization from Steps 1, 2, and 3 in isolation (compaction alone, compaction + Bloom, compaction + Bloom + fence pointers, etc.).
+   - Analyze concurrency improvements (if implemented).
+3. **Final Report**: 
+   - According to specs, you’ll produce ~10 pages including design, final performance graphs, and analysis of different workloads (read-heavy, mixed, write-heavy).
+   - Demonstrate that the system meets the **basic** and **additional** design requirements.
+
+---
+
+### Summary of Steps and Timelines
+- **Now–April 4**: Optimization 1 (Multi-level compaction)
+- **April 5–April 12**: Optimization 2 (Bloom filters)  
+- **April 13–April 19**: Optimization 3 (Fence pointers)
+- **April 19–May 2**: Concurrency
+- **May 3–Deadline**: Integration, experiments, final paper
