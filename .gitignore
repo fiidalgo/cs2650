@@ -7,6 +7,7 @@ CMakeLists.txt
 # LaTeX build files
 *.aux
 *.fdb_latexmk
-*.log
 *.fls
+*.log
+*.out
 *.synctex.gz

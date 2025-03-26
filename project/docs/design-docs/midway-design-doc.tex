@@ -1,0 +1,144 @@
+\documentclass[10pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{setspace}
+\setstretch{1.1}
+
+\title{Midway Check-in Design Document}
+\author{Nico Fidalgo}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}
+The goal of this milestone is to design and implement the core functionality of an LSM-tree-based key-value store, with a focus on buffering writes in memory to optimize insert performance and persisting them to disk as immutable sorted files. LSM-trees are prominent in modern NoSQL systems (e.g., LevelDB, RocksDB, Cassandra) due to their high-throughput writes.
+
+This document describes:
+\begin{itemize}
+  \item How I organize in-memory and on-disk data (via a \emph{MemTable} and \emph{SSTables}).
+  \item How I support basic operations---\texttt{put}, \texttt{get}, \texttt{range}, and \texttt{delete}---in a single-level on-disk layout.
+  \item How I've begun to measure performance (particularly for \texttt{put} and \texttt{get}) and what's planned next.
+\end{itemize}
+
+\section{Problems Tackled}
+\begin{itemize}
+  \item \textbf{In-Memory Write Buffer (MemTable)}: We need a fast in-memory data structure to absorb writes before flushing to disk.
+  \item \textbf{Durable On-Disk Storage (SSTables)}: An on-disk format for sorted, immutable data files to store the flushed MemTable contents.
+  \item \textbf{Basic Flush Mechanism}: Handle transitions from an active MemTable to an on-disk SSTable when thresholds are reached.
+  \item \textbf{Baseline Reads and Range Queries}: Ensure queries check both memory and disk data.
+  \item \textbf{Initial Performance Measurement}: Gather baseline metrics (time, I/O) for \texttt{put} and \texttt{get}.
+\end{itemize}
+
+\section{Technical Description}
+
+\subsection{MemTable: In-Memory Write Buffer}
+\textbf{(a) Problem Framing.}  
+We want to avoid slow disk I/O on every insert. Buffering writes in a MemTable allows us to batch them and flush large chunks to disk at once, vastly reducing random writes.
+
+\textbf{(b) High-Level Solution.}  
+I implement the MemTable as a \emph{skip list}, enabling efficient average-case insertions, lookups, and deletions in $O(\log n)$. I track the MemTable's size or entry count. When it exceeds a threshold (e.g.\ 4 MB or 1 million entries), it is marked \emph{immutable} and a fresh MemTable is created. 
+
+\textbf{(c) Deeper Details.}  
+\begin{itemize}
+  \item \emph{Skip List Mechanics}: Each node has multiple forward pointers; insertion and search proceed from top level down.
+  \item \emph{Tombstones}: Deletes set \texttt{is\_deleted = true} rather than physically removing the key.
+  \item \emph{Concurrency}: Once the MemTable is immutable, a background thread can flush it asynchronously while a new active MemTable serves new writes.
+  \item \emph{Example Pseudocode}:
+\begin{verbatim}
+function put(key, value):
+    if activeMemTable.size >= MEMTABLE_MAX:
+        activeMemTable.makeImmutable()
+        queueFlushTask(activeMemTable)
+        activeMemTable = new SkipList
+
+    activeMemTable.insert(key, value, is_deleted=false)
+\end{verbatim}
+\end{itemize}
+
+\subsection{SSTables: On-Disk Immutable Storage}
+\textbf{(a) Problem Framing.}  
+Once the MemTable is full, its contents must be persisted to disk in a file-based structure for durability and future lookups.
+
+\textbf{(b) High-Level Solution.}  
+Write out sorted records to a \emph{Sorted String Table (SSTable)} file. Each SSTable is immutable, simplifying concurrency and merges. Later updates and deletes appear in newer MemTables or SSTables.
+
+\textbf{(c) Deeper Details.}  
+\begin{itemize}
+  \item \textbf{File Format}:
+  \begin{enumerate}
+    \item Header: format version, entry count, min key, max key.
+    \item Data section: each record is \texttt{(key, value, is\_deleted)}, sorted by \texttt{key}.
+  \end{enumerate}
+  \item \textbf{Writing Procedure}:
+\begin{verbatim}
+function flushMemTable(memtable):
+    file = createFile("L0-<timestamp>.sst")
+    write header (version, # of entries, minKey, maxKey)
+    for each entry in memtable (sorted by key):
+        write key, value, is_deleted
+\end{verbatim}
+  \item \textbf{Only Level 0} for now: All SSTables accumulate in L0; no multi-level compaction yet.
+\end{itemize}
+
+\subsection{Read Path: \texttt{get(key)}}
+\textbf{(a) Problem Framing.}  
+When we read a key, it may reside in the active MemTable, an immutable MemTable, or among many SSTables.
+
+\textbf{(b) High-Level Solution.}  
+Check the active MemTable first, then immutable MemTables, then each SSTable from newest to oldest. If an entry is found with \texttt{is\_deleted = true}, we treat it as ``not found.''
+
+\textbf{(c) Deeper Details.}  
+\begin{itemize}
+  \item \emph{Linear SSTable Scan}: Read the file from start until target key is found or surpassed.
+  \item \emph{Future Optimizations}: Bloom filters, fence pointers, or multi-level compaction to reduce this overhead.
+\end{itemize}
+
+\subsection{Range Query: \texttt{range(start\_key, end\_key)}}
+\textbf{(a) Problem Framing.}  
+Range queries must combine results from memory and all SSTables for keys in $[start, end)$.
+
+\textbf{(b) High-Level Solution.}  
+Gather all candidate records from:
+\begin{itemize}
+  \item Active MemTable
+  \item Any immutable MemTables
+  \item Each SSTable
+\end{itemize}
+Then sort by key and deduplicate, retaining the newest versions.
+
+\textbf{(c) Deeper Details.}  
+\begin{itemize}
+  \item \emph{Implementation}: Do a simple linear pass for each structure, collect matching records, then combine them in memory.
+  \item \emph{Performance}: This approach is correct but can be slow with many SSTables.
+\end{itemize}
+
+\subsection{Early Experiments and Baseline Performance}
+\begin{itemize}
+  \item \textbf{PUT Experiment}: 
+    \begin{enumerate}
+      \item Generate a file of $N$ \texttt{(key, value)} pairs.
+      \item Load them into the LSM-Tree (each line triggers a \texttt{put}).
+      \item Measure total ingestion time, disk writes, bytes written.
+    \end{enumerate}
+  \item \textbf{GET Experiment}:
+    \begin{enumerate}
+      \item Assume $M$ keys are already loaded.
+      \item Issue random \texttt{get} commands.
+      \item Measure total query time, disk reads, bytes read.
+    \end{enumerate}
+\end{itemize}
+These results confirm correct functionality but also highlight the need for advanced features (compactions, filters, indexing) to reduce read amplification.
+
+\section{Challenges}
+\begin{itemize}
+  \item \textbf{Growing Number of SSTables}: Without multi-level compaction, read amplification increases over time.
+  \item \textbf{Concurrency}: I have a basic background flush mechanism, but concurrency complexities (manifest versioning, locking) will grow.
+  \item \textbf{Crash Recovery}: If the system crashes while data is only in the MemTable, that data is lost unless I add a write-ahead log.
+  \item \textbf{Indexing and Bloom Filters}: I have no partial indexes or filters yet, so on-disk lookups can be slow.
+\end{itemize}
+
+\end{document}
