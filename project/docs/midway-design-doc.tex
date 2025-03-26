@@ -1,0 +1,80 @@
+\documentclass[10pt]{article}
+
+% -- Packages --
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{amsmath,amssymb}
+\usepackage{url}
+
+\title{CS2650 Midway Check-in Design Document}
+\author{Nico Fidalgo \\
+Project: LSM-Tree Key-Value Store}
+\date{March 26, 2025}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}
+Briefly describe your project goals and the context of building
+an LSM-tree-based key-value store. State your primary focus:
+an in-memory buffer, on-disk levels, merges, and dictionary 
+operations supporting \texttt{put}, \texttt{get}, \texttt{range}, \texttt{delete}, \texttt{load}.
+Explain you are not yet focusing on concurrency.
+
+\section{Data Layout and Organization}
+\subsection{In-memory Buffer (Level-0)}
+Discuss the data structure (e.g., skip list). 
+Explain the flush threshold and how data is sorted and flushed.
+
+\subsection{On-Disk Levels}
+Detail how runs (SSTables) are stored, file format, 
+level capacities, and how you keep track of key ranges. 
+Note any fence pointer approach, Bloom filters usage or plan.
+
+\subsection{Merging / Compaction}
+Describe your chosen merge policy (tiering, leveling, or both),
+how merges are triggered, and how tombstones are processed. 
+Mention I/O complexities briefly.
+
+\section{Dictionary Operations}
+\subsection{Put/Update}
+Pseudo-code or a short figure to show how inserts flow 
+to memtable and eventually to disk.
+
+\subsection{Get}
+Summarize how a lookup goes from top to bottom (memtable, Bloom filters, etc.).
+Brief pseudo-code for clarity.
+
+\subsection{Range}
+Explain the method for scanning multiple runs and merging results.
+
+\subsection{Delete}
+Note that deletes place a tombstone in the memtable and merges eventually discard them.
+
+\section{Preliminary Experiments}
+\subsection{Experiment 1: Put Performance}
+How many items you inserted, average latency or I/Os.
+
+\subsection{Experiment 2: Get Performance}
+Number of lookups, average read latency, any unoptimized vs. partial-optimized data.
+
+\section{Challenges and Next Steps}
+List major issues encountered (e.g., disk format, merges, tombstones). 
+Mention at least three optimizations you plan to implement 
+(e.g., dynamic Bloom filter bits-per-level, partial compaction, 
+custom size ratio, etc.). 
+Close with a short mention of concurrency plans for the final milestone.
+
+\bibliographystyle{plain}
+\begin{thebibliography}{1}
+\bibitem{lsm1996}
+  P. O'Neil, E. Cheng, etc. \textit{The Log-Structured Merge-Tree (LSM-tree)}. 1996.
+
+\bibitem{leveldb}
+  Google. \textit{LevelDB Documentation}, \url{https://github.com/google/leveldb}.
+
+% add any references here
+\end{thebibliography}
+
+\end{document}

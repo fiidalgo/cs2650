@@ -1,4 +1,0 @@
-operation,num_keys,key_range,num_queries,time_ms,throughput,io_reads,io_writes,io_read_bytes,io_write_bytes,results_count
-PUT,1000,10000,1000,16667,59.9988,0,0,0,0,0
-GET,1000,10000,1000,0,inf,0,0,0,0,0
-RANGE,1000,10000,1000,0,inf,0,2881,0,16331,0

@@ -2,24 +2,11 @@
 
 # Build directories
 build/
-cmake-build-debug/
-cmake-build-release/
 CMakeLists.txt
 
-# IDE files
-.idea/
-.vscode/
-
-# Compiled object files
-*.o
-*.obj
-*.so
-*.dylib
-*.dll
-
-# Executables
-*.exe
-*.out
-
-# Debug files
-*.dSYM/
+# LaTeX build files
+*.aux
+*.fdb_latexmk
+*.log
+*.fls
+*.synctex.gz
