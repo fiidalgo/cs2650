@@ -45,6 +45,43 @@ namespace lsm
             }
         }
 
+        // Constructor that creates an SSTable directly from KeyValue pairs
+        SSTable(const std::string &file_path, const std::vector<KeyValue> &data)
+            : file_path_(file_path), entry_count_(data.size())
+        {
+            if (data.empty())
+            {
+                min_key_ = 0;
+                max_key_ = 0;
+                return;
+            }
+
+            min_key_ = data[0].key;
+            max_key_ = data[data.size() - 1].key;
+
+            TrackedFile file(file_path, false);
+            if (!file.isOpen())
+            {
+                entry_count_ = 0;
+                return;
+            }
+
+            // Write header
+            uint32_t format_version = 1;
+            file.write(&format_version, sizeof(format_version));
+            file.write(&entry_count_, sizeof(entry_count_));
+            file.write(&min_key_, sizeof(min_key_));
+            file.write(&max_key_, sizeof(max_key_));
+
+            // Write entries
+            for (const auto &kv : data)
+            {
+                file.write(&kv.key, sizeof(kv.key));
+                file.write(&kv.value, sizeof(kv.value));
+                file.write(&kv.is_deleted, sizeof(kv.is_deleted));
+            }
+        }
+
         // Check if key might be in this SSTable
         bool mayContainKey(const Key &key) const
         {
@@ -232,6 +269,39 @@ namespace lsm
         Key maxKey() const
         {
             return max_key_;
+        }
+
+        // Add a method to read all data from an SSTable for compaction
+        std::vector<KeyValue> readAll() const
+        {
+            std::vector<KeyValue> data;
+
+            if (entry_count_ == 0)
+            {
+                return data;
+            }
+
+            TrackedFile file(file_path_, true);
+            if (!file.isOpen())
+            {
+                return data;
+            }
+
+            // Skip header
+            file.seek(HEADER_SIZE);
+
+            // Read all entries
+            data.reserve(entry_count_);
+            for (uint64_t i = 0; i < entry_count_; i++)
+            {
+                KeyValue kv;
+                file.read(&kv.key, sizeof(kv.key));
+                file.read(&kv.value, sizeof(kv.value));
+                file.read(&kv.is_deleted, sizeof(kv.is_deleted));
+                data.push_back(kv);
+            }
+
+            return data;
         }
     };
 

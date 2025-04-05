@@ -27,6 +27,7 @@
 #include <sys/types.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <dirent.h>
 
 namespace lsm
 {
@@ -160,6 +161,121 @@ namespace lsm
     inline bool createDirectory(const std::string &path)
     {
         return mkdir(path.c_str(), 0755) == 0 || errno == EEXIST;
+    }
+
+    // Directory entry class
+    class DirectoryEntry
+    {
+    public:
+        DirectoryEntry(const std::string &path) : path_(path) {}
+
+        bool is_regular_file() const
+        {
+            struct stat buffer;
+            if (stat(path_.c_str(), &buffer) != 0)
+            {
+                return false;
+            }
+            return S_ISREG(buffer.st_mode);
+        }
+
+        std::string path() const
+        {
+            return path_;
+        }
+
+    private:
+        std::string path_;
+    };
+
+    // Directory iterator class
+    class DirectoryIterator
+    {
+    public:
+        class Iterator
+        {
+        public:
+            Iterator(DIR *dir, const std::string &base_path)
+                : dir_(dir), base_path_(base_path), entry_(nullptr)
+            {
+                if (dir_)
+                {
+                    advance();
+                }
+            }
+
+            Iterator() : dir_(nullptr), entry_(nullptr) {}
+
+            ~Iterator()
+            {
+                if (dir_)
+                {
+                    closedir(dir_);
+                }
+            }
+
+            bool operator!=(const Iterator &other) const
+            {
+                return dir_ != other.dir_ || entry_ != other.entry_;
+            }
+
+            Iterator &operator++()
+            {
+                advance();
+                return *this;
+            }
+
+            DirectoryEntry operator*() const
+            {
+                return DirectoryEntry(base_path_ + "/" + entry_->d_name);
+            }
+
+        private:
+            void advance()
+            {
+                if (dir_)
+                {
+                    entry_ = readdir(dir_);
+                    // Skip . and ..
+                    while (entry_ && (strcmp(entry_->d_name, ".") == 0 || strcmp(entry_->d_name, "..") == 0))
+                    {
+                        entry_ = readdir(dir_);
+                    }
+
+                    if (!entry_)
+                    {
+                        closedir(dir_);
+                        dir_ = nullptr;
+                    }
+                }
+            }
+
+            DIR *dir_;
+            std::string base_path_;
+            struct dirent *entry_;
+        };
+
+        DirectoryIterator(const std::string &path) : path_(path) {}
+
+        Iterator begin() const
+        {
+            DIR *dir = opendir(path_.c_str());
+            return Iterator(dir, path_);
+        }
+
+        Iterator end() const
+        {
+            return Iterator();
+        }
+
+    private:
+        std::string path_;
+    };
+
+    // Directory iteration function
+    inline DirectoryIterator directoryIterator(const std::string &path)
+    {
+        return DirectoryIterator(path);
     }
 
     // Tracked file I/O wrapper

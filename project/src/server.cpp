@@ -6,7 +6,8 @@
 #include <vector>
 #include <map>
 #include <fstream>
-#include <filesystem>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 using namespace lsm;
 
@@ -31,6 +32,29 @@ ServerConfig parseArgs(int argc, char *argv[])
     }
 
     return config;
+}
+
+// Check if directory exists
+bool directoryExists(const std::string &path)
+{
+    struct stat info;
+    if (stat(path.c_str(), &info) != 0)
+    {
+        return false;
+    }
+    return (info.st_mode & S_IFDIR);
+}
+
+// Create directory if it doesn't exist
+bool serverCreateDirectory(const std::string &path)
+{
+    if (directoryExists(path))
+    {
+        return true;
+    }
+
+    // Create directory with read/write/execute permissions for owner
+    return mkdir(path.c_str(), S_IRWXU) == 0;
 }
 
 // Split a string by whitespace
@@ -243,6 +267,32 @@ std::string processCommand(LSMTree &db, const std::string &command)
 
         return ss.str();
     }
+    else if (cmd == "c" || cmd == "compact")
+    {
+        // Compact command: c
+        try
+        {
+            // Manually trigger compaction
+            Status status = db.compact();
+
+            if (status == Status::OK)
+            {
+                return "Compaction triggered successfully.";
+            }
+            else if (status == Status::NOT_SUPPORTED)
+            {
+                return "Compaction already in progress.";
+            }
+            else
+            {
+                return "Compaction failed: " + statusToString(status);
+            }
+        }
+        catch (const std::exception &e)
+        {
+            return "Error during compaction: " + std::string(e.what());
+        }
+    }
     else if (cmd == "q" || cmd == "quit" || cmd == "exit")
     {
         // Quit command
@@ -260,9 +310,13 @@ int main(int argc, char *argv[])
     ServerConfig config = parseArgs(argc, argv);
 
     // Ensure data directory exists
-    if (!std::filesystem::exists(config.data_dir))
+    if (!directoryExists(config.data_dir))
     {
-        std::filesystem::create_directories(config.data_dir);
+        if (!serverCreateDirectory(config.data_dir))
+        {
+            std::cerr << "Error: Could not create data directory " << config.data_dir << std::endl;
+            return 1;
+        }
     }
 
     std::cout << "LSM-Tree Key-Value Store Server" << std::endl;
@@ -289,6 +343,7 @@ int main(int argc, char *argv[])
             std::cout << "  r [start] [end]   - Range query" << std::endl;
             std::cout << "  l [filepath]      - Load key-value pairs from a file" << std::endl;
             std::cout << "  s                 - Print statistics" << std::endl;
+            std::cout << "  c                 - Trigger manual compaction" << std::endl;
             std::cout << "  q, quit, exit     - Exit the server" << std::endl;
             continue;
         }
