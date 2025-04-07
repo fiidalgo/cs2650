@@ -1,0 +1,4 @@
+{
+  "memtable_size_bytes": 1048576,
+  "data_dir": "project/data/test_naive"
+} 
