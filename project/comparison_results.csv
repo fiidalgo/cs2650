@@ -1,3 +1,0 @@
-implementation,put_time_ms,seq_get_time_ms,rand_get_time_ms,range_time_ms,io_read_count,io_write_count,sstable_count,compaction_count
-naive,543.65,918.69,28965.89,6462.53,0,0,0,0
-compaction,545.14,883.83,30508.54,6177.26,0,0,0,0

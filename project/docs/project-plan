@@ -1,0 +1,283 @@
+# 📘 Project Plan: LSM-Tree Optimizations & Testing Pipeline
+
+---
+
+## 📐 Structure of the Project
+
+Build and evaluate **4 LSM-Tree systems**:
+
+1. **Naive System**: MemTable + flush-only L0 SSTables, no compaction.
+2. **+ Compaction**: Leveling compaction, tunable SSTable threshold and size ratio.
+3. **+ Bloom Filters**: Added bloom filters, with tunable FP rate & hash count.
+4. **+ Fence Pointers**: On-disk fence pointers added for fast seeks.
+5. **(Concurrency Layer)**: Layer added post-optimization, tested independently.
+
+Each system will be tested on the **same suite of workloads**: read-heavy, write-heavy, range-heavy, and balanced.
+
+---
+
+## 🛠️ Phase 0: Unified Testing Framework
+
+**Goal**: Build an automated harness to test all systems using consistent workloads, record performance metrics, and visualize results.
+
+### Deliverables:
+- `test_runner.py`: CLI tool to run `put`, `get`, `range`, and mixed workloads.
+- `workload_generator.py`: Generates synthetic datasets (uniform, Zipfian, range-targeted).
+- `metrics_collector.py`: Hooks to gather:
+  - Latency and throughput (reads, writes).
+  - Number of SSTables accessed per read.
+  - I/O bytes (read/write).
+  - Bloom false positive rate (when enabled).
+  - Fence pointer seek time (when enabled).
+- Output: CSVs or JSON logs for each experiment, plus plotting utilities.
+
+---
+
+## 🧱 Phase 1: Naive Implementation
+
+### Design
+- MemTable (skip list).
+- Immutable MemTables flushed to SSTables in **Level 0**.
+- SSTables scanned in reverse time order for reads.
+- No merging/compaction.
+
+### Tests
+| Workload     | Configurations                                |
+|--------------|-----------------------------------------------|
+| `put-heavy`  | 100k – 10M inserts, random keys                |
+| `get-heavy`  | 10k–100k reads, 70% existing keys             |
+| `range-heavy`| Queries for key ranges of 100–1000 keys       |
+| `balanced`   | Mixed 50% put, 30% get, 20% range             |
+
+### Metrics Collected
+- Read latency & I/O with growing number of SSTables.
+- Write throughput and flush latency.
+- Number of SSTables scanned per read.
+
+---
+
+## 🔁 Phase 2: Compaction (Leveling)
+
+### Configurable Parameters
+- `sstable_threshold_L0`: default = 4
+- `size_ratio`: default = 10
+- Compaction Policy: leveling (default), tiered
+
+### Implementation Plan
+- Introduce `L1`, `L2`, ...
+- Track SSTable size and count per level.
+- Trigger compaction when L0 exceeds threshold.
+- Sort-merge overlapping SSTables across levels.
+
+
+### 🔧 Hyperparameter Tuning for Compaction (Phase 2)
+
+#### Tunable Parameters
+
+| Parameter              | Description                                                              | Candidate Values         |
+|------------------------|--------------------------------------------------------------------------|--------------------------|
+| `sstable_threshold_L0` | Max number of SSTables in L0 before triggering compaction                | 2, 4, 6, 8               |
+| `size_ratio`           | Size ratio between L_i and L_{i+1}                                       | 5, 10, 20                |
+| `compaction_policy`    | Whether to use **leveling** or **tiered** compaction                     | "leveling", "tiered"     |
+
+#### Test Design
+
+- **Dataset Size**: 1M keys (random keys, uniform distribution)
+- **Write Load**: Bulk load of 1M keys, followed by 500k point writes
+- **Read Load**:
+  - 100k `get()` queries on uniformly selected keys
+  - 10k `range()` queries with range lengths in {50, 100, 500, 1000}
+- Run every `(threshold, ratio, policy)` combination on the same workload.
+
+#### Metrics Collected
+
+- Average `get()` latency
+- Number of SSTables read per `get()`
+- Total bytes read/written during compaction
+- Write throughput during insert phase
+- Compaction time and frequency
+
+#### Visualizations
+
+- 📈 Line chart: `GET latency` vs. `sstable_threshold_L0` for each policy
+- 📊 Bar chart: `Total compaction I/O` vs. `size_ratio` grouped by policy
+- 📈 Line chart: `Write throughput` vs. threshold for each size ratio
+
+#### Goal
+
+Select the best `(threshold, size_ratio, policy)` combo that:
+- Minimizes read latency
+- Keeps write throughput acceptable
+- Limits compaction cost and frequency
+
+---
+
+## 🔍 Phase 3: Bloom Filters
+
+### Configurable Parameters
+- False positive rate: default = 1%
+- Hash function count: derived or configurable
+
+### Implementation Plan
+- On SSTable creation, build Bloom filter for all keys.
+- Store filters on disk or in memory.
+- On `get()`, check Bloom filter first to skip SSTables.
+
+### 🔧 Hyperparameter Tuning for Bloom Filters (Phase 3)
+
+#### Tunable Parameters
+
+| Parameter             | Description                                          | Candidate Values       |
+|------------------------|------------------------------------------------------|------------------------|
+| `false_positive_rate` | Target FP rate for the Bloom filter                  | 0.001, 0.01, 0.05      |
+| `bits_per_key`        | Determines Bloom filter size (indirectly)            | 8, 10, 14, 16           |
+| `hash_count`          | Number of hash functions (can be derived or fixed)   | 2, 3, 4, 5              |
+
+#### Test Design
+
+- **Dataset**: Load 1M keys
+- **GET Workloads**:
+  - 100k `get()` queries for **existing keys**
+  - 100k `get()` queries for **non-existent keys**
+- Run all combinations of FP rate and hash count on same system (with compaction enabled).
+
+#### Metrics Collected
+
+- Bloom filter false positive rate (measured)
+- Average `get()` latency
+- SSTables skipped per query
+- Total I/O during queries
+
+#### Visualizations
+
+- 📈 Line chart: `False Positive Rate (actual)` vs. `target FP rate`
+- 📊 Bar chart: `SSTables skipped` vs. `hash count` grouped by FP rate
+- 📈 Line chart: `GET latency` vs. `bits per key`
+
+#### Goal
+
+Choose the filter parameters that:
+- Maximize SSTables skipped
+- Keep read latency low
+- Don’t over-allocate memory (balance between size and performance)
+
+---
+
+## 📍 Phase 4: Fence Pointers
+
+### Configurable Parameters
+- Block size: 4KB, 8KB, 16KB
+- Number of fence pointers per SSTable
+
+### Implementation Plan
+- Divide SSTable into blocks.
+- Store (key_min, byte_offset) for each block.
+- On `get(key)`, binary search fence pointers then read block.
+
+### 🔧 Hyperparameter Tuning for Fence Pointers (Phase 4)
+
+#### Tunable Parameters
+
+| Parameter              | Description                                        | Candidate Values    |
+|------------------------|----------------------------------------------------|---------------------|
+| `block_size`           | Size of each on-disk block (affects granularity)  | 4KB, 8KB, 16KB      |
+| `pointers_per_table`   | Number of fence pointers (derived from block size) | implicit            |
+
+#### Test Design
+
+- Load 1M key-value pairs into SSTables with Bloom filters enabled
+- Run 100k `get()` queries for random keys
+- Compare:
+  - No fence pointers
+  - Fence pointers only
+  - Fence pointers + Bloom filters
+
+#### Metrics Collected
+
+- Fence pointer seek time
+- Block I/O (bytes per lookup)
+- Average `get()` latency
+
+#### Visualizations
+
+- 📈 Line chart: `Get latency` vs. `block size`
+- 📊 Bar chart: `Avg. blocks accessed per query` by block size
+- 📈 Line chart: `Latency` (None vs. Fence vs. Fence+Bloom)
+
+#### Goal
+
+Find the best `block_size` that:
+- Minimizes I/O while keeping pointer overhead low
+- Offers measurable improvement in seek time
+- Pairs well with Bloom filters (combined effectiveness)
+
+---
+
+## ⚙️ Phase 5: Concurrency
+
+### Implementation Plan
+- **MemTable Locking**: Use mutex to swap active/immutable safely.
+- **Flush Threading**: Spawn background thread for SSTable write.
+- **Compaction Queue**: Thread pool for compactions, each task is a compaction unit.
+- **Manifest Versioning**: Readers always use a stable manifest snapshot.
+- **Copy-on-Write**: Don’t delete old files until no reader is using them.
+
+### Tests
+- Concurrent `put` and `get` while compactions run.
+- Throughput before/after concurrency.
+- Fault injection: test failure during flush or compaction.
+
+---
+
+## 📊 Phase 6: Final Testing & Visualization
+
+### Test Matrix
+
+| System Version        | Bloom | Fence | Concurrency | Test Set |
+|------------------------|-------|--------|-------------|----------|
+| Naive                 | ❌    | ❌     | ❌          | ✅ All   |
+| + Compaction          | ❌    | ❌     | ❌          | ✅ All   |
+| + Bloom               | ✅    | ❌     | ❌          | ✅ All   |
+| + Fence Pointers      | ✅    | ✅     | ❌          | ✅ All   |
+| + Concurrency         | ✅    | ✅     | ✅          | ✅ All   |
+
+### Visualizations
+- **Read latency** vs. number of SSTables.
+- **Write throughput** across stages.
+- **Range query latency** vs. key span.
+- **I/O bytes** written/read per system.
+- **SSTables skipped** due to Bloom filters.
+- **Time to locate block** with fence pointers.
+
+---
+
+## 📁 Versioning & Folder Structure
+
+Remember to `cd project` as the root directory for the project is `cs2650`.
+
+```
+project/
+├── src/
+│   ├── naive/
+│   ├── compaction/
+│   ├── bloom/
+│   ├── fence/
+│   ├── concurrency/
+├── tests/
+│   ├── workload_generator.py
+│   ├── test_runner.py
+│   ├── metrics_collector.py
+│   └── configs/
+│       ├── test_get_balanced.json
+│       ├── test_range_heavy.json
+├── results/
+│   ├── naive.csv
+│   ├── compaction.csv
+│   ├── ...
+├── plots/
+│   ├── read_latency_comparison.png
+│   ├── bloom_fp_rate.png
+│   └── ...
+└── final_report/
+    └── paper.md / paper.pdf
+```
