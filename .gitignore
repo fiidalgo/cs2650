@@ -79,3 +79,6 @@ test-results/
 *.fls
 *.out
 *.synctex.gz
+
+# Lectures
+lectures/
