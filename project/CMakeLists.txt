@@ -6,6 +6,16 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Set default build type to Release
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+
+# Add compiler flags
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -O0")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
+
 # Enable all warnings
 if(MSVC)
     add_compile_options(/W4)
@@ -17,7 +27,7 @@ endif()
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # Find packages
-find_package(nlohmann_json QUIET)
+find_package(nlohmann_json REQUIRED)
 if(NOT nlohmann_json_FOUND)
     include(FetchContent)
     FetchContent_Declare(
@@ -50,21 +60,57 @@ set(NAIVE_SOURCES
 )
 
 # Add library for naive implementation
-add_library(lsm_tree_naive STATIC ${NAIVE_SOURCES})
-target_link_libraries(lsm_tree_naive PRIVATE nlohmann_json::nlohmann_json)
-target_include_directories(lsm_tree_naive PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+add_library(naive_lsm STATIC ${NAIVE_SOURCES})
+target_link_libraries(naive_lsm PRIVATE nlohmann_json::nlohmann_json)
+target_include_directories(naive_lsm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+# Compaction implementation
+add_library(compaction_lsm STATIC
+    src/naive/memtable.cpp
+    src/naive/sstable.cpp
+    src/compaction/lsm_tree.cpp
+)
+target_link_libraries(compaction_lsm PRIVATE nlohmann_json::nlohmann_json)
+target_include_directories(compaction_lsm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # CLI executable
 add_executable(lsm_cli src/cli.cpp)
-target_link_libraries(lsm_cli PRIVATE lsm_tree_naive)
+target_link_libraries(lsm_cli PRIVATE naive_lsm)
 
-# Add C++ test executable
-add_executable(lsm_tree_test tests/cpp/main_test.cpp)
-target_link_libraries(lsm_tree_test PRIVATE lsm_tree_naive)
+# Testing
+find_package(GTest REQUIRED)
+enable_testing()
+
+# Compaction tuning tests
+add_executable(compaction_tuning_tests tests/cpp/compaction_tuning_test.cpp)
+target_link_libraries(compaction_tuning_tests compaction_lsm GTest::GTest GTest::Main)
+
+# Set RPATH for the executable to find GTest libraries
+set_target_properties(compaction_tuning_tests PROPERTIES 
+    INSTALL_RPATH "/Users/nico/miniconda3/lib"
+    BUILD_WITH_INSTALL_RPATH TRUE
+    SKIP_BUILD_RPATH FALSE
+)
+
+# Force the linker to include the GTest libraries
+if(APPLE)
+    set_target_properties(compaction_tuning_tests PROPERTIES
+        LINK_FLAGS "-Wl,-rpath,/Users/nico/miniconda3/lib"
+    )
+endif()
+
+add_test(NAME compaction_tuning_tests COMMAND compaction_tuning_tests)
+
+# Create data directories
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../data/naive)
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../data/compaction)
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../data/bloom)
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../data/fence)
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../data/concurrency)
 
 # Create Python module
 pybind11_add_module(lsm_tree_binding src/bindings/bindings.cpp)
-target_link_libraries(lsm_tree_binding PRIVATE lsm_tree_naive)
+target_link_libraries(lsm_tree_binding PRIVATE naive_lsm)
 target_include_directories(lsm_tree_binding PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # Installation rules
@@ -184,7 +230,7 @@ Thumbs.db
 ")
 
 # Set output directories
-set_target_properties(lsm_tree_naive lsm_tree_test lsm_tree_binding lsm_cli PROPERTIES
+set_target_properties(naive_lsm compaction_lsm lsm_tree_binding lsm_cli compaction_tuning_tests PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
