@@ -103,10 +103,18 @@ This approach will allow data-driven optimization decisions rather than guessing
    - Used modern C++17 features like structured bindings for cleaner iteration
 
 5. **Designed header files for SSTable, LSM-Tree, and Manifest components**
+
    - Created interfaces with well-defined responsibilities
    - Established relationships between components
    - Set up the foundation for incremental implementation
    - Added detailed documentation explaining component roles
+
+6. **Implemented a Working Naive LSM-Tree Database**
+   - Created a fully interactive database system with the naive implementation
+   - Implemented a command-line interface for interacting with the database
+   - Added support for key operations: PUT, GET, REMOVE, and RANGE
+   - Developed a simple but extensible DSL (Domain-Specific Language) for database commands
+   - Implemented support for switching between different implementation types (naive, compaction, etc.)
 
 ### Design Decisions
 
@@ -314,3 +322,244 @@ In addition to the MemTable component described earlier, we've designed the foll
    - Recovery: Used to rebuild the system state after shutdown or crash
 
 This component architecture follows the design principles of LSM-Trees while maintaining clean separation of concerns. Each component has a well-defined role in the system, making the implementation easier to understand, test, and extend.
+
+### Client-Server Architecture
+
+The project implements a client-server architecture for the database system:
+
+1. **Server Components**
+
+   - **Main Server (main.cpp)**: Entry point for the server application that initializes the system
+   - **Server Logic (server.cpp)**: Handles client connections and request processing
+   - **DSL Parser (dsl_parser.cpp)**: Parses the domain-specific language commands from clients
+   - Current Status: Placeholder implementation with basic structure defined
+   - Future Development: Will handle network communication, command routing, and coordination with the LSM-Tree
+
+2. **Client Component**
+
+   - **Client Application (client.cpp)**: Command-line interface for interacting with the server
+   - Current Status: Placeholder implementation with basic structure
+   - Future Development: Will provide a user-friendly interface for sending commands to the server
+
+3. **Testing Framework**
+   - **Functional Tests**: Validate the behavior of individual components
+   - **MemTable Test (test_memtable.cpp)**: Comprehensive test for all MemTable operations:
+     - Tests empty table properties
+     - Validates put/get operations
+     - Tests update behavior
+     - Verifies range query functionality
+     - Confirms proper tombstone handling for removals
+     - Examines iteration with for_each
+   - Test Approach: Uses assertions and console output for verification
+   - Future Tests: Will cover SSTable, LSM-Tree, and full system integration
+
+### Running the System
+
+The project is designed to be easy to set up and run:
+
+1. **One-Time Setup**
+
+   ```bash
+   # Make the setup script executable
+   chmod +x scripts/setup.sh
+
+   # Run the setup script to create directories and generate build files
+   ./scripts/setup.sh
+   ```
+
+   - This verifies prerequisites (CMake, C++ compiler)
+   - Creates necessary data directories
+   - Generates initial build files
+   - Needs to be run only once initially, or after major repository changes
+
+2. **Building the Project**
+
+   ```bash
+   # Navigate to the build directory
+   cd build
+
+   # Compile the project
+   make
+   ```
+
+   - Compiles all components (libraries and executables)
+   - Must be run after any code changes
+
+3. **Running Tests**
+
+   ```bash
+   # Execute the MemTable test
+   ./bin/test_memtable
+   ```
+
+   - Validates the MemTable implementation
+   - Should be run after changes to related components
+
+4. **Running the Server**
+
+   ```bash
+   # Start the database server
+   ./bin/server
+   ```
+
+   - Launches the server process
+   - Currently displays a placeholder message
+   - Will eventually accept and process client connections
+
+5. **Running the Client**
+   ```bash
+   # Start the client application
+   ./bin/client
+   ```
+   - Launches the client application
+   - Currently displays a placeholder message
+   - Will eventually connect to the server and process user commands
+
+All executables are located in the `bin/` directory after building, making it easy to run any component of the system. The system is designed to be built and run on-demand without any persistent state at this stage.
+
+### Implementation Details
+
+1. **Functional Database Components**
+
+   - **LSM-Tree**: Implemented a basic version that uses just the MemTable for storage
+   - **Server**: Created a command processor that handles user input and executes database operations
+   - **DSL Parser**: Built a parser that converts text commands into structured operations
+   - **Command Interface**: Developed a simple but powerful command-line interface
+
+2. **Command Language**
+   The database now supports a simple command language:
+
+   ```
+   PUT <key> <value>    - Store a key-value pair
+   GET <key>            - Retrieve a value by key
+   REMOVE <key>         - Delete a key-value pair
+   RANGE <start> <end>  - Get all key-value pairs in the range [start, end)
+   HELP                 - Show help information
+   EXIT                 - Quit the database
+   ```
+
+3. **Implementation Selection**
+   - Added command-line flag `--impl` to select between implementation types
+   - Currently supports: naive, compaction, bloom, fence, concurrency
+   - Each implementation has its own data directory for persistence
+   - System is designed to make it easy to switch between implementations
+
+### How to Run the System
+
+The database system is now fully interactive and ready to use:
+
+1. **Building the System**
+
+   ```bash
+   # From the project root directory
+   cmake .
+   make
+   ```
+
+2. **Running the Database**
+
+   ```bash
+   # Start with the default (naive) implementation
+   ./bin/server
+
+   # Or specify a different implementation (for future use)
+   ./bin/server --impl naive
+   ```
+
+3. **Example Usage**
+
+   ```
+   > PUT 1 100
+   Stored key: 1, value: 100
+
+   > PUT 2 200
+   Stored key: 2, value: 200
+
+   > GET 1
+   Key: 1, Value: 100
+
+   > RANGE 1 3
+   Range query [1, 3) returned 2 entries:
+     Key: 1, Value: 100
+     Key: 2, Value: 200
+
+   > REMOVE 1
+   Removed key: 1
+
+   > GET 1
+   Key not found: 1
+   ```
+
+4. **Future Enhancements**
+   - Add persistence by implementing SSTable flush operations
+   - Implement compaction strategies for better performance
+   - Add bloom filters to improve read performance
+   - Implement fence pointers for more efficient range queries
+   - Add multi-threading support for concurrent operations
+
+### Key Achievements
+
+- Created a fully functional, interactive database system
+- Successfully implemented all core operations (put, get, remove, range)
+- Developed a clean command-line interface
+- Established a modular foundation for future optimizations
+- Designed a system that can easily switch between implementation types
+
+## April 10th, 2023
+
+### Network Client-Server Implementation
+
+Today I implemented a client-server architecture for our LSM-Tree database, allowing it to operate over a network connection:
+
+#### Server Implementation
+
+- Added socket-based server functionality that listens for client connections on port 9090 (configurable)
+- The server can now run in two modes:
+  - Console mode (default): Accepts commands directly from the terminal
+  - Socket mode: Listens for network connections and processes remote commands
+- Modified the server to handle multiple client connections sequentially
+- Enhanced the command-line interface to support the new socket mode with options:
+  - `--socket` to enable socket server mode
+  - `--port` to configure the listening port
+
+#### Client Implementation
+
+- Created a separate client application that connects to the server over a TCP socket
+- Implemented a simple command-line interface for the client with shorthand commands:
+  - `p <key> <value>` - PUT operation
+  - `g <key>` - GET operation
+  - `d <key>` - DELETE operation
+  - `r <start> <end>` - RANGE operation
+  - `s` - Database statistics
+  - `h` - Help information
+  - `q` - Exit
+- The client handles connection establishment, command parsing via the DSL parser, and response display
+
+#### DSL Parser
+
+- Implemented a domain-specific language parser to standardize command interpretation
+- The parser handles both shorthand and readable command formats
+- Command processing is consistent between console and socket modes
+
+#### Network Protocol
+
+- Used a simple text-based protocol for communication
+- Commands are sent as plain text strings
+- Responses are returned as formatted text
+- This approach provides good human-readability for debugging
+
+#### Usage Instructions
+
+To test the client-server functionality:
+
+1. Start the server in socket mode:
+   ```
+   ./bin/server --socket
+   ```
+2. In a separate terminal, start the client:
+   ```
+   ./bin/client
+   ```
+3. Enter commands in the client terminal to interact with the database
+
+This implementation provides a foundation for distributed database access while maintaining the same command interface regardless of whether commands come from the console or over the network.

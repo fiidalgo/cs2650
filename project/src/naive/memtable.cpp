@@ -24,7 +24,7 @@ namespace naive
     //--------------------------------------------------------------------------------------------------
     // get() - Retrieve the value for a key
     //--------------------------------------------------------------------------------------------------
-    std::optional<MemTable::Value> MemTable::get(MemTable::Key key) const
+    MemTable::OptionalValue MemTable::get(MemTable::Key key) const
     {
         // Try to find the key in the map
         auto it = data_.find(key);
@@ -101,7 +101,7 @@ namespace naive
     //--------------------------------------------------------------------------------------------------
     // for_each() - Apply a function to each entry in the MemTable
     //--------------------------------------------------------------------------------------------------
-    void MemTable::for_each(const std::function<void(MemTable::Key, const std::optional<MemTable::Value> &)> &func) const
+    void MemTable::for_each(const std::function<void(MemTable::Key, const MemTable::OptionalValue &)> &func) const
     {
         // Iterate through all entries and apply the function
         for (const auto &[key, value] : data_)

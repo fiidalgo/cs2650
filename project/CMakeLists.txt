@@ -24,6 +24,9 @@ include_directories(
     ${PROJECT_SOURCE_DIR}/include
 )
 
+# Create include directory for server if it doesn't exist
+file(MAKE_DIRECTORY ${PROJECT_SOURCE_DIR}/include/server)
+
 # Compiler flags
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Werror")
@@ -58,6 +61,7 @@ target_link_libraries(server lsm_server)
 
 # Create the client executable
 add_executable(client src/client/client.cpp)
+target_link_libraries(client lsm_server)
 
 # Tests section
 enable_testing()

@@ -7,13 +7,6 @@
 #include <vector>     // For std::vector
 #include <functional> // For std::function (used in range queries)
 
-// Forward declare for linter
-namespace std
-{
-    template <typename T>
-    class optional;
-}
-
 namespace naive
 {
 
