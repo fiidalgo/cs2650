@@ -15,3 +15,35 @@ project-specs.pdf
 
 # DS_Store
 .DS_Store
+
+# Build directories
+build/
+bin/
+lib/
+CMakeFiles/
+Testing/
+
+# CMake generated files
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+CTestTestfile.cmake
+*.cmake
+!CMakeLists.txt  # Don't ignore CMakeLists.txt files
+
+# Build artifacts
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+*.exe
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
