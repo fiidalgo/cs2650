@@ -2,6 +2,7 @@
 lectures/
 papers/
 design-doc-template.pdf
+project-specs.pdf
 
 # LaTeX build files
 *.aux
