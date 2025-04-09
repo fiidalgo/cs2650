@@ -1,6 +1,6 @@
-# 📘 Project Plan: LSM-Tree Optimizations
+# Project Plan
 
-## 🎯 Project Specifications
+## Project Specifications
 
 ### Design Choices
 
@@ -15,7 +15,7 @@
 7. The database server should persist data to a specified data directory
 8. If the data directory has contents at startup, the system should load any relevant data, preparing or reconstructing additional structures if necessary (fence pointers, bloom filters, etc.)
 
-### DSL Specification
+### DSL
 
 - **PUT**: `p [int1] [int2]` where key is int1 and value is int2
 - **GET**: `g [int1]` where key is int1
@@ -39,7 +39,31 @@
 
 ---
 
-## 📐 Structure of the Project
+## Server-Client Architecture Overview
+
+1. **Database Server**:
+
+   - Runs as a standalone process in one terminal
+   - Manages the LSM-Tree data structure and all data on disk
+   - Listens for client connections on a specified port
+   - Processes DSL commands received from clients
+   - Responds with appropriate results
+
+2. **Client Application**:
+   - Runs separately in another terminal
+   - Connects to the server over a socket connection
+   - Sends DSL commands to the server (such as `p 123 456`)
+   - Receives and displays results from the server
+
+This allows for:
+
+- Multiple clients to connect to the same database server simultaneously
+- Clear separation between the database engine and user interface
+- Network-based access to the LSM-Tree database
+
+---
+
+## Goals of the Project
 
 Build and evaluate **4 LSM-Tree systems**:
 
@@ -53,279 +77,30 @@ Each system will be tested on the **same suite of workloads**: read-heavy, write
 
 ---
 
-## 🛠️ Phase 0: Unified Testing Framework
+## Detailed Implementation Plan
 
-**Goal**: Build an automated harness to test all systems using consistent workloads, record performance metrics, and visualize results.
-
-### Deliverables:
-
-- `test_runner.py`: CLI tool to run `put`, `get`, `range`, and mixed workloads.
-- `workload_generator.py`: Generates synthetic datasets (uniform, Zipfian, range-targeted).
-- `metrics_collector.py`: Hooks to gather:
-  - Latency and throughput (reads, writes).
-  - Number of SSTables accessed per read.
-  - I/O bytes (read/write).
-  - Bloom false positive rate (when enabled).
-  - Fence pointer seek time (when enabled).
-- Output: CSVs or JSON logs for each experiment, plus plotting utilities.
-
----
-
-## 🧱 Phase 1: Naive Implementation
-
-### Design
-
-- MemTable (skip list).
-- Immutable MemTables flushed to SSTables in **Level 0**.
-- SSTables scanned in reverse time order for reads.
-- No merging/compaction.
-
-### Tests
-
-| Workload      | Configurations                          |
-| ------------- | --------------------------------------- |
-| `put-heavy`   | 100k – 10M inserts, random keys         |
-| `get-heavy`   | 10k–100k reads, 70% existing keys       |
-| `range-heavy` | Queries for key ranges of 100–1000 keys |
-| `balanced`    | Mixed 50% put, 30% get, 20% range       |
-
-### Metrics Collected
-
-- Read latency & I/O with growing number of SSTables.
-- Write throughput and flush latency.
-- Number of SSTables scanned per read.
-
----
-
-## 🔁 Phase 2: Compaction (Leveling)
-
-### Configurable Parameters
-
-- `sstable_threshold_L0`: default = 4
-- `size_ratio`: default = 10
-- Compaction Policy: leveling (default), tiered
-
-### Implementation Plan
-
-- Introduce `L1`, `L2`, ...
-- Track SSTable size and count per level.
-- Trigger compaction when L0 exceeds threshold.
-- Sort-merge overlapping SSTables across levels.
-
-### 🔧 Hyperparameter Tuning for Compaction (Phase 2)
-
-#### Tunable Parameters
-
-| Parameter              | Description                                               | Candidate Values     |
-| ---------------------- | --------------------------------------------------------- | -------------------- |
-| `sstable_threshold_L0` | Max number of SSTables in L0 before triggering compaction | 2, 4, 6, 8           |
-| `size_ratio`           | Size ratio between L*i and L*{i+1}                        | 5, 10, 20            |
-| `compaction_policy`    | Whether to use **leveling** or **tiered** compaction      | "leveling", "tiered" |
-
-#### Test Design
-
-- **Dataset Size**: 1M keys (random keys, uniform distribution)
-- **Write Load**: Bulk load of 1M keys, followed by 500k point writes
-- **Read Load**:
-  - 100k `get()` queries on uniformly selected keys
-  - 10k `range()` queries with range lengths in {50, 100, 500, 1000}
-- Run every `(threshold, ratio, policy)` combination on the same workload.
-
-#### Metrics Collected
-
-- Average `get()` latency
-- Number of SSTables read per `get()`
-- Total bytes read/written during compaction
-- Write throughput during insert phase
-- Compaction time and frequency
-
-#### Visualizations
-
-- 📈 Line chart: `GET latency` vs. `sstable_threshold_L0` for each policy
-- 📊 Bar chart: `Total compaction I/O` vs. `size_ratio` grouped by policy
-- 📈 Line chart: `Write throughput` vs. threshold for each size ratio
-
-#### Goal
-
-Select the best `(threshold, size_ratio, policy)` combo that:
-
-- Minimizes read latency
-- Keeps write throughput acceptable
-- Limits compaction cost and frequency
-
----
-
-## 🔍 Phase 3: Bloom Filters
-
-### Configurable Parameters
-
-- False positive rate: default = 1%
-- Hash function count: derived or configurable
-
-### Implementation Plan
-
-- On SSTable creation, build Bloom filter for all keys.
-- Store filters on disk or in memory.
-- On `get()`, check Bloom filter first to skip SSTables.
-
-### 🔧 Hyperparameter Tuning for Bloom Filters (Phase 3)
-
-#### Tunable Parameters
-
-| Parameter             | Description                                        | Candidate Values  |
-| --------------------- | -------------------------------------------------- | ----------------- |
-| `false_positive_rate` | Target FP rate for the Bloom filter                | 0.001, 0.01, 0.05 |
-| `bits_per_key`        | Determines Bloom filter size (indirectly)          | 8, 10, 14, 16     |
-| `hash_count`          | Number of hash functions (can be derived or fixed) | 2, 3, 4, 5        |
-
-#### Test Design
-
-- **Dataset**: Load 1M keys
-- **GET Workloads**:
-  - 100k `get()` queries for **existing keys**
-  - 100k `get()` queries for **non-existent keys**
-- Run all combinations of FP rate and hash count on same system (with compaction enabled).
-
-#### Metrics Collected
-
-- Bloom filter false positive rate (measured)
-- Average `get()` latency
-- SSTables skipped per query
-- Total I/O during queries
-
-#### Visualizations
-
-- 📈 Line chart: `False Positive Rate (actual)` vs. `target FP rate`
-- 📊 Bar chart: `SSTables skipped` vs. `hash count` grouped by FP rate
-- 📈 Line chart: `GET latency` vs. `bits per key`
-
-#### Goal
-
-Choose the filter parameters that:
-
-- Maximize SSTables skipped
-- Keep read latency low
-- Don't over-allocate memory (balance between size and performance)
-
----
-
-## 📍 Phase 4: Fence Pointers
-
-### Configurable Parameters
-
-- Block size: 4KB, 8KB, 16KB
-- Number of fence pointers per SSTable
-
-### Implementation Plan
-
-- Divide SSTable into blocks.
-- Store (key_min, byte_offset) for each block.
-- On `get(key)`, binary search fence pointers then read block.
-
-### 🔧 Hyperparameter Tuning for Fence Pointers (Phase 4)
-
-#### Tunable Parameters
-
-| Parameter            | Description                                        | Candidate Values |
-| -------------------- | -------------------------------------------------- | ---------------- |
-| `block_size`         | Size of each on-disk block (affects granularity)   | 4KB, 8KB, 16KB   |
-| `pointers_per_table` | Number of fence pointers (derived from block size) | implicit         |
-
-#### Test Design
-
-- Load 1M key-value pairs into SSTables with Bloom filters enabled
-- Run 100k `get()` queries for random keys
-- Compare:
-  - No fence pointers
-  - Fence pointers only
-  - Fence pointers + Bloom filters
-
-#### Metrics Collected
-
-- Fence pointer seek time
-- Block I/O (bytes per lookup)
-- Average `get()` latency
-
-#### Visualizations
-
-- 📈 Line chart: `Get latency` vs. `block size`
-- 📊 Bar chart: `Avg. blocks accessed per query` by block size
-- 📈 Line chart: `Latency` (None vs. Fence vs. Fence+Bloom)
-
-#### Goal
-
-Find the best `block_size` that:
-
-- Minimizes I/O while keeping pointer overhead low
-- Offers measurable improvement in seek time
-- Pairs well with Bloom filters (combined effectiveness)
-
----
-
-## ⚙️ Phase 5: Concurrency
-
-### Implementation Plan
-
-- **MemTable Locking**: Use mutex to swap active/immutable safely.
-- **Flush Threading**: Spawn background thread for SSTable write.
-- **Compaction Queue**: Thread pool for compactions, each task is a compaction unit.
-- **Manifest Versioning**: Readers always use a stable manifest snapshot.
-- **Copy-on-Write**: Don't delete old files until no reader is using them.
-
-### Tests
-
-- Concurrent `put` and `get` while compactions run.
-- Throughput before/after concurrency.
-- Fault injection: test failure during flush or compaction.
-
----
-
-## 📊 Phase 6: Final Testing & Visualization
-
-### Test Matrix
-
-| System Version   | Bloom | Fence | Concurrency | Test Set |
-| ---------------- | ----- | ----- | ----------- | -------- |
-| Naive            | ❌    | ❌    | ❌          | ✅ All   |
-| + Compaction     | ❌    | ❌    | ❌          | ✅ All   |
-| + Bloom          | ✅    | ❌    | ❌          | ✅ All   |
-| + Fence Pointers | ✅    | ✅    | ❌          | ✅ All   |
-| + Concurrency    | ✅    | ✅    | ✅          | ✅ All   |
-
-### Visualizations
-
-- **Read latency** vs. number of SSTables.
-- **Write throughput** across stages.
-- **Range query latency** vs. key span.
-- **I/O bytes** written/read per system.
-- **SSTables skipped** due to Bloom filters.
-- **Time to locate block** with fence pointers.
-
----
-
-## 📁 Versioning & Folder Structure
-
-Remember to `cd project` as the root directory for the project is `cs2650`.
+### Directory Structure and Files Overview
 
 ```
 project/
 ├── include/                # C++ header files
-│   ├── naive/
-│   │   ├── memtable.h      # In-memory storage component
-│   │   ├── sstable.h       # On-disk storage component
-│   │   └── lsm_tree.h      # Main LSM-Tree implementation
-│   ├── compaction/         # (Future) Headers for compaction-enabled implementation
-│   ├── bloom/              # (Future) Headers for Bloom filters implementation
-│   ├── fence/              # (Future) Headers for fence pointers implementation
-│   └── concurrency/        # (Future) Headers for concurrent implementation
+│   ├── naive/              # Headers for naive LSM-Tree implementation
+│   ├── compaction/         # Headers for compaction-enabled implementation
+│   ├── bloom/              # Headers for Bloom filters implementation
+│   ├── fence/              # Headers for fence pointers implementation
+│   ├── concurrency/        # Headers for concurrent implementation
+│   └── server/             # Headers for server implementation
 │
 ├── src/                    # C++ implementation files
-│   ├── naive/
-│   │   ├── memtable.cpp    # MemTable implementation
-│   │   ├── sstable.cpp     # SSTable implementation
-│   │   └── lsm_tree.cpp    # LSM-Tree implementation
-│   ├── cli.cpp             # Command-line interface
-│   └── bindings/           # Python bindings using pybind11
+│   ├── naive/              # Naive implementation source
+│   ├── compaction/         # Compaction implementation source
+│   ├── bloom/              # Bloom filters implementation source
+│   ├── fence/              # Fence pointers implementation source
+│   ├── concurrency/        # Concurrency implementation source
+│   ├── server/             # Server implementation source
+│   ├── client/             # Client implementation source
+│   ├── bench/              # Benchmarking utilities source
+│   └── tools/              # Utility tools source
 │
 ├── data/                   # Data storage directories
 │   ├── naive/              # Storage for naive implementation
@@ -335,14 +110,247 @@ project/
 │   └── concurrency/        # Storage for concurrent implementation
 │
 ├── tests/                  # Test files
-│   ├── cpp/                # C++ tests
-│   └── python/             # Python tests
+│   ├── functional/         # Functional correctness tests
+│   ├── performance/        # Performance benchmark tests
+│   └── data_generators/    # Test data generation scripts
 │
-├── python/                 # Python package
-│   └── lsm_tree/           # LSM-Tree Python module
+├── results/                # Test and benchmark results
+│   ├── naive/              # Results for naive implementation
+│   ├── compaction/         # Results for compaction implementation
+│   ├── bloom/              # Results for bloom filters implementation
+│   ├── fence/              # Results for fence pointers implementation
+│   └── concurrency/        # Results for concurrent implementation
+│
+├── scripts/                # Utility scripts
+│   ├── setup.sh            # Environment setup script
+│   ├── run_tests.sh        # Test automation script
+│   ├── plot_results.py     # Result visualization script
+│   └── hyperparameter.py   # Hyperparameter tuning script
 │
 ├── docs/                   # Documentation
-│   ├── work_log.md         # This file
-│   ├── project-plan.md     # Project plan
+│   ├── work_log.md         # Progress tracking
+│   ├── project-plan        # This file
 │   └── design-docs/        # Design documentation
+│
+├── CMakeLists.txt          # Build configuration
+├── README.md               # Project overview
+└── .gitignore              # Git ignore file
 ```
+
+### Step-by-Step Implementation Process
+
+#### Phase 1: Basic Infrastructure and Naive LSM-Tree
+
+1. **Set up project structure**
+
+   - Create all necessary directories
+   - Configure `CMakeLists.txt` for the build system
+   - Set up `scripts/setup.sh` for environment configuration
+
+2. **Design and implement core data structures**
+
+   - `include/naive/memtable.h`: In-memory component interface
+     - Defines sorted map structure for key-value pairs
+     - Includes size tracking and iterator interfaces
+   - `src/naive/memtable.cpp`: MemTable implementation
+     - Uses a balanced tree (std::map) for efficient operations
+     - Implements all required operations: put, get, range, size tracking
+
+3. **Implement SSTable**
+
+   - `include/naive/sstable.h`: On-disk component interface
+     - Defines file format and access methods
+   - `src/naive/sstable.cpp`: SSTable implementation
+     - Handles disk I/O, serialization, and deserialization
+     - Implements efficient lookup and range query algorithms
+   - Storage location: `data/naive/` directory
+   - File naming convention: `sstable_<timestamp>_<id>.sst`
+
+4. **Implement naive LSM-Tree**
+
+   - `include/naive/lsm_tree.h`: Main interface for LSM-Tree
+     - Defines operations: put, get, range, delete, flush
+   - `src/naive/lsm_tree.cpp`: LSM-Tree implementation
+     - Manages MemTable and multiple SSTables
+     - Implements flush operation
+     - Uses tombstones for deletion
+   - `include/naive/manifest.h` & `src/naive/manifest.cpp`:
+     - Tracks SSTable metadata and versioning
+     - Persists to `data/naive/MANIFEST` file
+
+5. **Implement client and server components**
+
+   - `include/server/server.h` & `src/server/server.cpp`: Database server
+     - TCP socket-based server listening for client connections
+     - Processes DSL commands and returns results
+     - Manages LSM-Tree instance
+   - `src/client/client.cpp`: Client implementation
+     - Simple client that connects to server
+     - Accepts DSL commands from user and sends to server
+     - Displays results from server
+   - `include/server/protocol.h`: Defines communication protocol
+
+6. **Implement DSL parser**
+
+   - `include/server/dsl_parser.h` & `src/server/dsl_parser.cpp`:
+     - Parses and validates DSL commands
+     - Translates commands to LSM-Tree operations
+     - Handles error conditions and returns appropriate messages
+
+7. **Basic testing framework**
+   - `tests/functional/test_naive.cpp`: Correctness tests
+   - `tests/performance/bench_naive.cpp`: Performance benchmarks
+   - `tests/data_generators/uniform_generator.cpp`: Generate test data
+   - Results stored in `results/naive/` directory
+   - Metrics collected:
+     - Throughput (ops/sec)
+     - Latency (ms)
+     - I/O statistics
+
+#### Phase 2: Compaction Implementation
+
+1. **Design and implement compaction strategy**
+
+   - `include/compaction/compaction_strategy.h`: Strategy interface
+     - Define leveling/tiering policies
+     - Declare methods for selecting SSTables for compaction
+   - `src/compaction/leveled_compaction.cpp`: Leveled compaction
+     - Implements level-based compaction with configurable parameters
+     - Controls when/which SSTables get merged
+   - `src/compaction/tiered_compaction.cpp`: Tiered compaction (alternative)
+     - Implementation of tiered compaction strategy
+
+2. **Extend LSM-Tree with compaction support**
+
+   - `include/compaction/lsm_tree.h` & `src/compaction/lsm_tree.cpp`:
+     - Extends naive implementation with compaction capabilities
+     - Adds level management and tracking
+     - Implements background compaction via function call
+   - `include/compaction/manifest.h` & `src/compaction/manifest.cpp`:
+     - Enhanced manifest to track levels and compaction state
+     - Persisted to `data/compaction/MANIFEST` file
+
+3. **Hyperparameter tuning for compaction**
+   - `scripts/hyperparameter.py`: Tuning script
+     - Tests different combinations of parameters:
+       - L0 SSTable threshold
+       - Size ratio between levels
+       - Compaction policy
+     - Generates test workloads
+     - Collects and records performance metrics
+   - `tests/performance/bench_compaction.cpp`: Benchmarking program
+   - Results stored in `results/compaction/tuning/` directory
+   - Visualizations generated in `results/compaction/plots/` directory
+
+#### Phase 3: Bloom Filters Implementation
+
+1. **Design and implement Bloom filters**
+
+   - `include/bloom/bloom_filter.h` & `src/bloom/bloom_filter.cpp`:
+     - Configurable false positive rate
+     - Methods for filter creation and querying
+     - Serialization/deserialization
+   - Bloom filter files stored alongside SSTables: `<sstable_name>.bloom`
+
+2. **Integrate Bloom filters with SSTable**
+
+   - `include/bloom/sstable.h` & `src/bloom/sstable.cpp`:
+     - Extended SSTable with Bloom filter support
+     - Modified lookup to check filter before disk access
+   - `include/bloom/lsm_tree.h` & `src/bloom/lsm_tree.cpp`:
+     - LSM-Tree implementation that uses Bloom filter-enabled SSTables
+     - Manages filter creation during SSTable flush/compaction
+
+3. **Hyperparameter tuning for Bloom filters**
+   - `scripts/hyperparameter.py`: Enhanced for Bloom filter parameters
+     - Tests various false positive rates
+     - Tests bits-per-key settings
+     - Tests hash function counts
+   - `tests/performance/bench_bloom.cpp`: Bloom filter benchmarking
+   - Results stored in `results/bloom/tuning/` directory
+   - Visualizations generated in `results/bloom/plots/` directory
+
+#### Phase 4: Fence Pointers Implementation
+
+1. **Design and implement fence pointers**
+
+   - `include/fence/fence_pointers.h` & `src/fence/fence_pointers.cpp`:
+     - Data structure for storing and querying fence pointers
+     - Binary search implementation for key lookups
+     - Serialization/deserialization
+   - `include/fence/block_manager.h` & `src/fence/block_manager.cpp`:
+     - Manages on-disk block access and caching
+     - Configurable block size
+
+2. **Integrate fence pointers with SSTable**
+
+   - `include/fence/sstable.h` & `src/fence/sstable.cpp`:
+     - SSTable implementation with block-based layout
+     - Uses fence pointers for efficient data access
+     - Combines with Bloom filters for optimal performance
+   - Fence pointer index stored with SSTable: `<sstable_name>.index`
+
+3. **Hyperparameter tuning for fence pointers**
+   - `scripts/hyperparameter.py`: Enhanced for fence pointer parameters
+     - Tests different block sizes
+     - Tests with/without Bloom filters
+   - `tests/performance/bench_fence.cpp`: Fence pointer benchmarking
+   - Results stored in `results/fence/tuning/` directory
+   - Visualizations generated in `results/fence/plots/` directory
+
+#### Phase 5: Concurrency Implementation
+
+1. **Design and implement concurrent MemTable**
+
+   - `include/concurrency/memtable.h` & `src/concurrency/memtable.cpp`:
+     - Thread-safe MemTable implementation
+     - Uses fine-grained locking or lock-free data structures
+
+2. **Implement concurrent LSM-Tree operations**
+
+   - `include/concurrency/lsm_tree.h` & `src/concurrency/lsm_tree.cpp`:
+     - Thread-safe operations (put, get, range, delete)
+     - Background thread for MemTable flushing
+     - Background thread for compaction
+   - `include/concurrency/manifest.h` & `src/concurrency/manifest.cpp`:
+     - Thread-safe manifest with versioning
+     - Copy-on-write for reader safety
+
+3. **Server enhancements for concurrency**
+
+   - `include/server/concurrent_server.h` & `src/server/concurrent_server.cpp`:
+     - Multi-threaded server implementation
+     - Connection pool management
+     - Request queuing and processing
+
+4. **Performance testing for concurrency**
+   - `tests/performance/bench_concurrency.cpp`: Concurrency benchmarks
+     - Tests different thread counts
+     - Measures throughput under concurrent load
+     - Tests mixed workloads
+   - Results stored in `results/concurrency/` directory
+   - Visualizations in `results/concurrency/plots/` directory
+
+#### Phase 6: Final Testing and Documentation
+
+1. **Comprehensive testing across all implementations**
+
+   - `tests/functional/test_all.cpp`: Correctness tests for all versions
+   - `tests/performance/bench_all.cpp`: Performance comparison
+   - `scripts/run_tests.sh`: Test automation script
+   - Results stored in `results/final/` directory
+
+2. **Result visualization and analysis**
+
+   - `scripts/plot_results.py`: Generate comparative plots
+     - Performance across implementations
+     - Impact of each optimization
+     - Comparison against optimal configurations
+   - Output saved to `results/final/plots/` directory
+
+3. **Documentation completion**
+   - Update design documentation
+   - Document optimal configurations
+   - Summarize performance improvements
+
+---

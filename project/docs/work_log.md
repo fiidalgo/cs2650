@@ -1,265 +1,69 @@
-# LSM-Tree Implementation Work Log
+# Work Log
 
-This document tracks the development progress of our LSM-Tree implementation project. It includes details on project structure, implementation decisions, and future plans.
+This document tracks the development progress of this project. It includes details on progress, implementation decisions, and future plans.
 
-## Project Structure
+## 2025-04-08
 
-The project is organized as follows:
+### Completed
 
-```
-project/
-├── include/                # C++ header files
-│   ├── naive/
-│   │   ├── memtable.h      # In-memory storage component
-│   │   ├── sstable.h       # On-disk storage component
-│   │   └── lsm_tree.h      # Main LSM-Tree implementation
-│   ├── compaction/         # (Future) Headers for compaction-enabled implementation
-│   ├── bloom/              # (Future) Headers for Bloom filters implementation
-│   ├── fence/              # (Future) Headers for fence pointers implementation
-│   └── concurrency/        # (Future) Headers for concurrent implementation
-│
-├── src/                    # C++ implementation files
-│   ├── naive/
-│   │   ├── memtable.cpp    # MemTable implementation
-│   │   ├── sstable.cpp     # SSTable implementation
-│   │   └── lsm_tree.cpp    # LSM-Tree implementation
-│   ├── cli.cpp             # Command-line interface
-│   └── bindings/           # Python bindings using pybind11
-│
-├── data/                   # Data storage directories
-│   ├── naive/              # Storage for naive implementation
-│   ├── compaction/         # Storage for compaction implementation
-│   ├── bloom/              # Storage for bloom filter implementation
-│   ├── fence/              # Storage for fence pointers implementation
-│   └── concurrency/        # Storage for concurrent implementation
-│
-├── tests/                  # Test files
-│   ├── cpp/                # C++ tests
-│   └── python/             # Python tests
-│
-├── python/                 # Python package
-│   └── lsm_tree/           # LSM-Tree Python module
-│
-├── docs/                   # Documentation
-│   ├── work_log.md         # This file
-│   ├── project-plan.md     # Project plan
-│   └── design-docs/        # Design documentation
-```
+- Cleaned up the repository structure and set up the project organization
+- Created a detailed project plan outlining the step-by-step implementation approach
+- Designed the overall architecture as a client-server system
+- Defined the project's progression through phases: naive implementation → compaction → bloom filters → fence pointers → concurrency
+- Established the DSL for interacting with the database
+- Designed the testing framework and metrics collection approach
 
-## Completed Components
+### Design Decisions
 
-### 1. Naive Implementation
+#### LSM-Tree Architecture
 
-The naive implementation includes three main components:
+The LSM-Tree (Log-Structured Merge Tree) design was chosen because it offers excellent write performance while maintaining reasonable read performance.
 
-#### 1.1 MemTable (in-memory component)
+1. **MemTable**: Using a balanced tree (`std::map`) rather than a skip list for the initial implementation. This simplifies development while still providing $O(\log n)$ operations. Skip lists could be considered later for potential performance improvements.
 
-**Files**: `include/naive/memtable.h`, `src/naive/memtable.cpp`
+2. **SSTable Format**: Designed with a simple format initially (keys sorted, values adjacent) to facilitate easier debugging and implementation. The format will evolve as optimizations are added.
 
-**Functionality**:
+3. **Merge Policy**: Selected leveling as the default compaction strategy (over tiering) because:
 
-- Uses `std::map` for storing key-value pairs in sorted order
-- Supports operations: `put`, `get`, `range`, `size`, `sizeBytes`, `clear`
-- Tracks total memory usage for flush decisions
-- Provides iterators for accessing data sequentially
+   - Provides better read performance due to fewer SSTables to search
+   - Simpler to reason about initially
+   - More widely used in production systems (e.g., LevelDB, RocksDB)
 
-**Key Methods**:
+4. **Client-Server Architecture**: The two-process design (separate server and client) provides:
+   - Clean separation of concerns between storage engine and user interface
+   - Support for network-based access and multiple clients
+   - More realistic deployment structure that mirrors production database systems
 
-- `bool put(const std::string& key, const std::string& value)`: Insert or update a key-value pair
-- `std::optional<std::string> get(const std::string& key) const`: Retrieve a value for a key
-- `void range(const std::string& start_key, const std::string& end_key, callback)`: Range query
-- `size_t size() const`: Get number of entries
-- `size_t sizeBytes() const`: Get total size in bytes
-- `void clear()`: Remove all entries
+#### Testing Framework Approach
 
-#### 1.2 SSTable (on-disk component)
+Designed a comprehensive testing framework to:
 
-**Files**: `include/naive/sstable.h`, `src/naive/sstable.cpp`
+- Generate various workloads (read-heavy, write-heavy, range-heavy, mixed)
+- Collect detailed metrics (latency, throughput, I/O statistics)
+- Support hyperparameter tuning with grid search
+- Visualize performance trends
 
-**Functionality**:
+This approach will allow data-driven optimization decisions rather than guessing.
 
-- Immutable on-disk storage of sorted key-value pairs
-- File format includes metadata header and key-value pairs
-- Supports efficient lookups and range queries
-- Handles serialization and deserialization
+### Optimization Explanations
 
-**Key Methods**:
+1. **Compaction**: Process of merging multiple SSTables to control their count and organization. Key to maintaining read performance as the dataset grows.
 
-- `static std::unique_ptr<SSTable> createFromMemTable(...)`: Create SSTable from MemTable
-- `static std::unique_ptr<SSTable> load(const std::string& file_path)`: Load SSTable from disk
-- `std::optional<std::string> get(...)`: Look up a key
-- `void range(...)`: Range query
-- `size_t getSizeBytes() const`: Get file size
-- `void remove() const`: Delete SSTable file
+   - Leveling: Organizes SSTables into levels; each level is K times larger than the one above
+   - Tiering: Groups SSTables into tiers; compaction happens when a tier fills up
 
-#### 1.3 LSM-Tree (main component)
+2. **Bloom Filters**: Probabilistic data structures that can quickly tell if a key is definitely not in a set. In LSM-Trees, they allow skipping SSTables that don't contain a queried key, dramatically improving read performance.
 
-**Files**: `include/naive/lsm_tree.h`, `src/naive/lsm_tree.cpp`
+3. **Fence Pointers**: Index structures that divide SSTables into blocks and store the minimum key for each block. Allow binary search to quickly locate the correct block for a key, avoiding scanning the entire SSTable.
 
-**Functionality**:
-
-- Manages one MemTable and multiple SSTables
-- Implements the main key-value store operations
-- Handles MemTable flushing when size threshold is exceeded
-- Implements tombstone-based deletion
-
-**Key Methods**:
-
-- `void put(const std::string& key, const std::string& value)`: Insert or update
-- `std::optional<std::string> get(const std::string& key, ...)`: Retrieve a value
-- `void range(...)`: Range query
-- `void remove(const std::string& key)`: Delete a key (using tombstone)
-- `void flush()`: Manually flush MemTable to disk
-- `void compact()`: Trigger compaction (empty in naive implementation)
-- `std::string getStats() const`: Get statistics as JSON
-
-### 2. Command Line Interface
-
-**File**: `src/cli.cpp`
-
-**Functionality**:
-
-- Interactive command-line interface to LSM-Tree
-- Supports multiple implementations via factory pattern
-- Provides commands for all LSM-Tree operations
-
-**Commands**:
-
-- `p <key> <value>`: Put a key-value pair
-- `g <key>`: Get value for a key
-- `r <start> <end>`: Range query from start to end key (inclusive)
-- `d <key>`: Delete a key
-- `f`: Flush MemTable to disk
-- `c`: Trigger compaction (implementation-dependent)
-- `s`: Show statistics
-- `l <file>`: Load commands from file
-- `q`: Quit
-- `h`: Show help
-
-**Edge Cases**:
-
-- Compaction (`c` command) in the naive implementation does nothing, with a message indicating compaction isn't implemented
-- Non-existent keys in `g` command return "Key not found"
-- Invalid commands show usage help
-- Range queries with no results display "0 results found"
-
-## Future Implementations
-
-### 1. Compaction Implementation
-
-Planned features:
-
-- Leveled compaction strategy
-- Merging of SSTables to improve read performance
-- Background compaction thread
-
-### 2. Bloom Filters Implementation
-
-Planned features:
-
-- Bloom filter for each SSTable
-- Probabilistic filtering to avoid unnecessary disk reads
-- Configurable false positive rate
-
-### 3. Fence Pointers Implementation
-
-Planned features:
-
-- Sparse indexing of SSTable data
-- Efficient range queries with reduced disk I/O
-- Binary search for key lookups within SSTables
-
-### 4. Concurrency Implementation
-
-Planned features:
-
-- Thread-safe operations
-- Background compaction
-- Lock-free reads where possible
-
-## Development Log
-
-### 2025-04-06: Project Setup and Naive Implementation
-
-1. Set up project structure
-2. Implemented the basic naive LSM-Tree with MemTable and SSTable
-3. Created command-line interface
-4. Added Python bindings
-5. Organized data directories for different implementations
-6. Updated documentation
+4. **Concurrency Handling**: Techniques to allow multiple threads to safely access the LSM-Tree simultaneously, improving throughput on multi-core systems.
 
 ### Next Steps
 
-1. Implement leveled compaction
-2. Add Bloom filters for optimized reads
-3. Implement fence pointers for efficient range queries
-4. Add concurrency support
-5. Conduct performance evaluations
+1. Set up the basic project structure (directories, CMakeLists.txt)
+2. Implement the core MemTable data structure
+3. Implement the SSTable format and I/O operations
+4. Create the naive LSM-Tree implementation (put, get, range, delete operations)
+5. Begin work on the server component to handle client connections
 
-### 2025-04-07: Compaction Implementation
-
-1. Created compaction-enabled LSM-Tree implementation:
-
-   - Added `CompactionLSMTree` class with configurable parameters
-   - Implemented leveled compaction strategy
-   - Added support for multiple levels with size ratio control
-   - Implemented metrics collection for performance analysis
-
-2. Added hyperparameter tuning infrastructure:
-
-   - Created comprehensive test suite for tuning
-   - Implemented tests for L0 threshold, size ratio, and policy selection
-   - Added range query performance testing
-   - Created visualization tools for tuning results
-
-3. Key features of the compaction implementation:
-
-   - Configurable L0 SSTable threshold (default: 4)
-   - Adjustable size ratio between levels (default: 10)
-   - Support for different compaction policies (leveling/tiered)
-   - Detailed metrics collection (latency, throughput, I/O)
-   - Thread-safe operations with mutex protection
-
-4. Testing infrastructure:
-
-   - Automated test data generation
-   - Latency and throughput measurements
-   - I/O statistics collection
-   - JSON output for analysis
-   - Python visualization scripts
-
-5. Next steps:
-   - Run comprehensive tuning tests
-   - Analyze results to select optimal parameters
-   - Compare performance with naive implementation
-   - Document findings and parameter selection rationale
-
-### 2025-04-08: Compaction System Fine-Tuning
-
-1. Ran comprehensive compaction system tuning tests:
-
-   - Evaluated various L0 SSTable thresholds (2, 4, 6, 8)
-   - Tested different size ratios between levels (5, 10, 20)
-   - Compared compaction policies (leveling vs. tiered)
-   - Measured range query performance with different range sizes
-
-2. Key metrics collected during tuning:
-
-   - Write throughput (operations/second)
-   - Read latency (milliseconds)
-   - Compaction frequency
-   - Total I/O (bytes written)
-   - Number of levels created
-   - Range query performance
-
-3. Generated visualization plots for analysis:
-
-   - Individual plots for each parameter set
-   - Comparative summary plots
-   - Performance trade-off analysis
-
-4. Next steps:
-   - Analyze results to select optimal configuration
-   - Implement the selected configuration as default
-   - Document rationale behind parameter choices
-   - Update the LSM-Tree implementation with optimal values
+## 2025-04-09
