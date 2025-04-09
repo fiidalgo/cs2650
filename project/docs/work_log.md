@@ -71,12 +71,19 @@ This approach will allow data-driven optimization decisions rather than guessing
 ### Completed
 
 1. **Created the CMakeLists.txt build configuration file**
+
    - Configured the project to use C++17 standard (required for modern features like `std::optional`)
    - Set up the build structure for all project components
    - Defined library targets for the LSM-Tree components
    - Configured executable targets for server, client, and tests
    - Added compiler warning flags for better code quality
    - Organized output directories for a clean build structure
+
+2. **Created the setup.sh environment configuration script**
+   - Implemented dependency checking for required tools (CMake, C++ compilers)
+   - Automated directory structure creation
+   - Added build environment initialization
+   - Included helpful usage instructions for developers
 
 ### Design Decisions
 
@@ -95,10 +102,20 @@ This approach will allow data-driven optimization decisions rather than guessing
    - Set high optimization level for release builds
 
 3. **Output Organization**
+
    - Structured outputs to keep the build directory clean:
      - Executables go to `bin/` directory
      - Libraries go to `lib/` directory
    - Avoids cluttering the source directory with build artifacts
+
+4. **Script Organization**
+   - Created a main setup script in `scripts/` directory
+   - Reserved subdirectories for phase-specific scripts:
+     - `scripts/naive/`: Basic implementation scripts
+     - `scripts/compaction/`: Compaction strategy scripts
+     - `scripts/bloom/`: Bloom filter testing scripts
+     - `scripts/fence/`: Fence pointer testing scripts
+     - `scripts/concurrency/`: Concurrency testing scripts
 
 ### CMake Specifics and Structure
 
@@ -156,27 +173,80 @@ The CMakeLists.txt file defines the build process in several stages:
    ```
    Sets up automated testing for components.
 
-### Importance of CMake in the Project
+### Setup Script Structure and Functionality
 
-The CMakeLists.txt file serves as the backbone of the build system and directly impacts development workflow:
+The setup.sh script provides a robust environment setup process:
 
-1. **Cross-Platform Compatibility**
+1. **Environment Safety**
 
-   - Enables building on different operating systems without changing build scripts
-   - Manages platform-specific differences automatically
+   ```bash
+   set -e
+   ```
 
-2. **Dependency Management**
+   Ensures script exits on any error, preventing partial setups.
 
-   - Ensures components are built in the correct order
-   - Makes dependencies explicit and visible
+2. **Project Root Detection**
 
-3. **Build Configuration**
+   ```bash
+   PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+   ```
 
-   - Allows switching between debug and release builds
-   - Enforces consistent compiler settings across the project
+   Automatically finds the project root directory relative to the script location.
 
-4. **Testing Integration**
-   - Enables automated test execution
-   - Makes it easy to add new tests as development progresses
+3. **Dependency Verification**
 
-This file will continue to evolve as more components are added to the project, but the foundation is now in place for a robust build system.
+   ```bash
+   if ! command -v cmake &> /dev/null; then
+       echo "CMake is required but not installed..."
+       exit 1
+   fi
+   ```
+
+   Checks for required tools and provides clear error messages if missing.
+
+4. **Directory Structure**
+
+   ```bash
+   for dir in naive compaction bloom fence concurrency; do
+       DATA_DIR="$PROJECT_ROOT/data/$dir"
+       mkdir -p "$DATA_DIR"
+   done
+   ```
+
+   Creates necessary directories for each implementation phase.
+
+5. **Build Setup**
+   ```bash
+   cd "$BUILD_DIR"
+   cmake ..
+   ```
+   Generates the initial build files in the correct location.
+
+### Importance of the Setup Script
+
+The setup.sh script serves several critical purposes in the project:
+
+1. **Environment Consistency**
+
+   - Ensures all developers have the same directory structure
+   - Verifies required tools are available
+   - Prevents common setup issues
+
+2. **Automation**
+
+   - Reduces manual setup steps
+   - Minimizes human error in environment configuration
+   - Provides a single command for project initialization
+
+3. **Documentation**
+
+   - Serves as executable documentation of project requirements
+   - Makes it clear what tools and structure are needed
+   - Provides clear next steps after setup
+
+4. **Maintainability**
+   - Centralizes environment configuration
+   - Makes it easy to update requirements
+   - Simplifies onboarding of new developers
+
+This script, combined with the CMake configuration, provides a solid foundation for the project's build and development environment.
