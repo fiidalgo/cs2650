@@ -80,10 +80,18 @@ This approach will allow data-driven optimization decisions rather than guessing
    - Organized output directories for a clean build structure
 
 2. **Created the setup.sh environment configuration script**
+
    - Implemented dependency checking for required tools (CMake, C++ compilers)
    - Automated directory structure creation
    - Added build environment initialization
    - Included helpful usage instructions for developers
+
+3. **Implemented the MemTable header (memtable.h)**
+   - Designed the API for the in-memory component of the LSM-Tree
+   - Defined operations for putting, retrieving, and removing key-value pairs
+   - Implemented range query support for retrieving key ranges efficiently
+   - Added support for tombstones using std::optional to mark deleted entries
+   - Created a flexible iteration mechanism needed for flushing to disk
 
 ### Design Decisions
 
@@ -250,3 +258,39 @@ The setup.sh script serves several critical purposes in the project:
    - Simplifies onboarding of new developers
 
 This script, combined with the CMake configuration, provides a solid foundation for the project's build and development environment.
+
+### Component Design: MemTable
+
+The MemTable is the first major component of our LSM-Tree implementation with several key design choices:
+
+1. **Data Structure Choice**
+
+   - Selected `std::map` as the underlying data structure
+   - Provides O(log n) complexity for all major operations
+   - Maintains keys in sorted order, which is essential for efficient range queries and SSTable creation
+   - Chose a balanced tree over a skip list for simplicity and reliability
+
+2. **Tombstone Implementation**
+
+   - Used `std::optional<Value>` to represent deleted entries
+   - When a key is deleted, it remains in the table with a `nullopt` value
+   - This approach ensures deletions are properly propagated to SSTables during flush operations
+
+3. **API Design**
+
+   - Created a clean, intuitive interface with well-documented methods
+   - Used modern C++ features (std::optional, type aliases) for cleaner code
+   - Designed methods to mirror eventual LSM-Tree operations:
+     ```cpp
+     void put(Key key, Value value);
+     std::optional<Value> get(Key key) const;
+     bool remove(Key key);
+     std::vector<std::pair<Key, Value>> range(Key start_key, Key end_key) const;
+     ```
+
+4. **Iterator Support**
+   - Added `for_each` method that applies a function to each entry
+   - Crucial for the eventual flush operation to convert MemTable to SSTable
+   - Allows flexible processing of entries with their tombstone status preserved
+
+The MemTable serves as a write buffer, collecting changes in memory before flushing to disk. This approach significantly improves write performance by batching disk operations, which is a fundamental advantage of the LSM-Tree architecture.
