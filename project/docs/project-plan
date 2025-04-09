@@ -1,4 +1,41 @@
-# 📘 Project Plan: LSM-Tree Optimizations & Testing Pipeline
+# 📘 Project Plan: LSM-Tree Optimizations
+
+## 🎯 Project Specifications
+
+### Design Choices
+
+1. Follow either leveling, tiering, or lazy leveling merge policies
+2. Every level should include a bloom filter or multiple bloom filters with optimized bits per entry
+3. Each level should contain fence pointers to allow page or block access
+4. Must be able to handle negative keys and values (should handle signed and unsigned key-value pairs)
+5. System should run as two parts:
+   - A key-value database server which manages the data and waits to receive queries
+   - A lightweight query client which can communicate queries with the server and allow for multiple clients to connect
+6. The database server will respond to queries that adhere to the domain specific language (DSL) described below
+7. The database server should persist data to a specified data directory
+8. If the data directory has contents at startup, the system should load any relevant data, preparing or reconstructing additional structures if necessary (fence pointers, bloom filters, etc.)
+
+### DSL Specification
+
+- **PUT**: `p [int1] [int2]` where key is int1 and value is int2
+- **GET**: `g [int1]` where key is int1
+- **RANGE**: `r [int1] [int2]` which returns all keys from int1 (inclusive) to int2 (exclusive), with output formatted as "key1:value1 key2:value2 key3:value3..."
+- **DELETE**: `d [int1]` where int1 is a key
+- **LOAD**: `l "/path/to/file_name"` where the file is a binary file of integers to load into the tree (format: KEY-value-KEY-value-KEY-value... where each key and value is 4 bytes)
+- **PRINT STATS**: `s` which returns at minimum:
+
+  - Number of logical key-value pairs in the tree: "Logical Pairs: [count]"
+  - Number of keys in each level: "LVL1: [count], LVL2: [count], ..."
+  - A dump of the tree including key, value, and level: "Key:Value:Level"
+
+  Example output:
+
+  ```
+  Logical Pairs: 12
+  LVL1: 3, LVL3: 11
+  45:56:L1 56:84:L1 91:45:L1
+  7:32:L3 19:73:L3 32:91:L3 45:64:L3 58:3:L3 61:10:L3 66:4:L3 85:15:L3 91:71:L3 95:87:L3 97:76:L3
+  ```
 
 ---
 
@@ -10,7 +47,7 @@ Build and evaluate **4 LSM-Tree systems**:
 2. **+ Compaction**: Leveling compaction, tunable SSTable threshold and size ratio.
 3. **+ Bloom Filters**: Added bloom filters, with tunable FP rate & hash count.
 4. **+ Fence Pointers**: On-disk fence pointers added for fast seeks.
-5. **(Concurrency Layer)**: Layer added post-optimization, tested independently.
+5. **Concurrency Handling**: Layer added post-optimization, tested independently.
 
 Each system will be tested on the **same suite of workloads**: read-heavy, write-heavy, range-heavy, and balanced.
 

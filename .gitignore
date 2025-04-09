@@ -1,84 +1,16 @@
-# OS generated files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Build directories
-build/
-dist/
-bin/
-lib/
-
-# Compiled files
-*.o
-*.so
-*.dylib
-*.dll
-*.exe
-*.a
-*.out
-*.app
-
-# Python generated files
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-ENV/
-.env
-.venv
-.eggs/
-*.egg-info/
-*.egg
-
-# Data files
-data/**/*.sst
-data/**/*.log
-
-# IDE/Editor specific
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
-.vs/
-*.user
-*.suo
-*.sdf
-*.opensdf
-*.VC.db
-*.VC.opendb
-
-# CMake generated files
-CMakeCache.txt
-CMakeFiles/
-CMakeScripts/
-cmake_install.cmake
-install_manifest.txt
-CTestTestfile.cmake
-Testing/
-Makefile
-
-# Dependency directories
-_deps/
-
-# Logs and test results
-*.log
-test-results/
+# Lectures and papers
+lectures/
+papers/
+design-doc-template.pdf
 
 # LaTeX build files
 *.aux
+*.log
+*.out
+*.toc
 *.fdb_latexmk
 *.fls
-*.out
 *.synctex.gz
 
-# Lectures
-lectures/
+# DS_Store
+.DS_Store

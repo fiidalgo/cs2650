@@ -233,3 +233,33 @@ Planned features:
    - Analyze results to select optimal parameters
    - Compare performance with naive implementation
    - Document findings and parameter selection rationale
+
+### 2025-04-08: Compaction System Fine-Tuning
+
+1. Ran comprehensive compaction system tuning tests:
+
+   - Evaluated various L0 SSTable thresholds (2, 4, 6, 8)
+   - Tested different size ratios between levels (5, 10, 20)
+   - Compared compaction policies (leveling vs. tiered)
+   - Measured range query performance with different range sizes
+
+2. Key metrics collected during tuning:
+
+   - Write throughput (operations/second)
+   - Read latency (milliseconds)
+   - Compaction frequency
+   - Total I/O (bytes written)
+   - Number of levels created
+   - Range query performance
+
+3. Generated visualization plots for analysis:
+
+   - Individual plots for each parameter set
+   - Comparative summary plots
+   - Performance trade-off analysis
+
+4. Next steps:
+   - Analyze results to select optimal configuration
+   - Implement the selected configuration as default
+   - Document rationale behind parameter choices
+   - Update the LSM-Tree implementation with optimal values
