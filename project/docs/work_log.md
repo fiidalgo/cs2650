@@ -67,3 +67,116 @@ This approach will allow data-driven optimization decisions rather than guessing
 5. Begin work on the server component to handle client connections
 
 ## 2025-04-09
+
+### Completed
+
+1. **Created the CMakeLists.txt build configuration file**
+   - Configured the project to use C++17 standard (required for modern features like `std::optional`)
+   - Set up the build structure for all project components
+   - Defined library targets for the LSM-Tree components
+   - Configured executable targets for server, client, and tests
+   - Added compiler warning flags for better code quality
+   - Organized output directories for a clean build structure
+
+### Design Decisions
+
+1. **Modular Build Structure**
+
+   - Created separate static libraries for different components:
+     - `lsm_naive`: Core naive LSM-Tree implementation
+     - `lsm_server`: Server component that depends on the LSM-Tree
+   - Benefits: Clearer dependencies, faster incremental builds, better testability
+
+2. **Compiler and Language Settings**
+
+   - Chose C++17 for modern language features needed by the project
+   - Enabled strict compiler warnings (`-Wall -Wextra -Werror`)
+   - Configured debug symbols for development builds
+   - Set high optimization level for release builds
+
+3. **Output Organization**
+   - Structured outputs to keep the build directory clean:
+     - Executables go to `bin/` directory
+     - Libraries go to `lib/` directory
+   - Avoids cluttering the source directory with build artifacts
+
+### CMake Specifics and Structure
+
+The CMakeLists.txt file defines the build process in several stages:
+
+1. **Project Configuration**
+
+   ```cmake
+   cmake_minimum_required(VERSION 3.14)
+   project(LSM_Tree_DB VERSION 0.1.0 LANGUAGES CXX)
+   set(CMAKE_CXX_STANDARD 17)
+   ```
+
+   Defines basic project properties, required CMake version, and language standard.
+
+2. **Compiler and Output Settings**
+
+   ```cmake
+   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Werror")
+   set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+   set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+   ```
+
+   Configures compiler behavior and organizes output files.
+
+3. **Component Definitions**
+
+   ```cmake
+   set(NAIVE_SOURCES
+       src/naive/memtable.cpp
+       src/naive/sstable.cpp
+       src/naive/lsm_tree.cpp
+       src/naive/manifest.cpp
+   )
+   add_library(lsm_naive STATIC ${NAIVE_SOURCES})
+   ```
+
+   Defines source files for each component and creates library targets.
+
+4. **Executable Targets**
+
+   ```cmake
+   add_executable(server src/server/main.cpp)
+   target_link_libraries(server lsm_server)
+   ```
+
+   Creates executable targets and links them with required libraries.
+
+5. **Testing Configuration**
+   ```cmake
+   enable_testing()
+   add_executable(test_memtable tests/functional/test_memtable.cpp)
+   target_link_libraries(test_memtable lsm_naive)
+   add_test(NAME MemTableTest COMMAND test_memtable)
+   ```
+   Sets up automated testing for components.
+
+### Importance of CMake in the Project
+
+The CMakeLists.txt file serves as the backbone of the build system and directly impacts development workflow:
+
+1. **Cross-Platform Compatibility**
+
+   - Enables building on different operating systems without changing build scripts
+   - Manages platform-specific differences automatically
+
+2. **Dependency Management**
+
+   - Ensures components are built in the correct order
+   - Makes dependencies explicit and visible
+
+3. **Build Configuration**
+
+   - Allows switching between debug and release builds
+   - Enforces consistent compiler settings across the project
+
+4. **Testing Integration**
+   - Enables automated test execution
+   - Makes it easy to add new tests as development progresses
+
+This file will continue to evolve as more components are added to the project, but the foundation is now in place for a robust build system.
