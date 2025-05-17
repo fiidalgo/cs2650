@@ -35,7 +35,6 @@ namespace lsm
         bits.resize(bit_count);
 
         // Read the bits
-        // Since vector<bool> is specialized, we need a temporary buffer
         size_t byte_count = (bit_count + 7) / 8;
         std::vector<uint8_t> buffer(byte_count, 0);
 
@@ -71,10 +70,10 @@ namespace lsm
             size_t index = hash(key, i);
             if (!bits[index])
             {
-                return false; // Definitely not in the set
+                return false;
             }
         }
-        return true; // Might be in the set
+        return true;
     }
 
     void BloomFilter::save(const std::string &filename) const
@@ -94,7 +93,6 @@ namespace lsm
         file.write(reinterpret_cast<const char *>(&bit_count), sizeof(bit_count));
 
         // Write the bits
-        // Since vector<bool> is specialized, we need a temporary buffer
         size_t byte_count = (bit_count + 7) / 8;
         std::vector<uint8_t> buffer(byte_count, 0);
 
@@ -178,4 +176,4 @@ namespace lsm
         return hash;
     }
 
-} // namespace lsm
+}

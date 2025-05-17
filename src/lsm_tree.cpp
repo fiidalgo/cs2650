@@ -140,7 +140,6 @@ namespace lsm
             log_debug("Flushing buffer during shutdown to prevent data loss");
             flush_buffer();
         }
-        // The rest of cleanup is handled by unique_ptr destructors
     }
 
     void LSMTree::put(int64_t key, int64_t value)
@@ -633,7 +632,7 @@ namespace lsm
         all_pairs = std::move(deduplicated);
 
         // Calculate the total size of merged data
-        size_t total_size = all_pairs.size() * (sizeof(int64_t) * 2); // key + value
+        size_t total_size = all_pairs.size() * (sizeof(int64_t) * 2);
 
         log_debug("Compacted " + std::to_string(runs.size()) + " runs into " +
                   std::to_string(all_pairs.size()) + " key-value pairs (" +
@@ -647,9 +646,6 @@ namespace lsm
             {
                 int next_level = level + 1;
 
-                // Only proceed with compaction if we've reached the threshold
-                // The needs_compaction() check already happened, but this ensures we don't
-                // accidentally compact due to recursive calls
                 if (runs.size() >= constants::TIERING_THRESHOLD)
                 {
                     size_t run_id = levels[next_level]->run_count();
@@ -736,7 +732,7 @@ namespace lsm
                     levels[level]->clear_runs();
 
                     // Create a new single run
-                    size_t run_id = 0; // Always use ID 0 for a single run
+                    size_t run_id = 0;
                     double fpr = calculate_fpr_for_level(level);
 
                     auto new_run = std::make_unique<Run>(all_pairs, level, run_id, fpr);
@@ -792,7 +788,7 @@ namespace lsm
                     // Compact in place
                     levels[level]->clear_runs();
 
-                    size_t run_id = 0; // Always use ID 0 for a single run in leveling
+                    size_t run_id = 0;
                     double fpr = calculate_fpr_for_level(level);
 
                     auto new_run = std::make_unique<Run>(all_pairs, level, run_id, fpr);

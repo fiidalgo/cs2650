@@ -31,11 +31,9 @@ namespace lsm
         {
             std::cout << "Flushing LSM-Tree and performing any pending compactions..." << std::endl;
             // The tree destructor will flush the buffer, but we can also force compaction
-            // to ensure optimal storage before shutdown
             tree->compact();
             std::cout << "LSM-Tree shutdown complete" << std::endl;
         }
-        // Tree will be properly destroyed when adapter's destructor runs
     }
 
     std::string LSMAdapter::process_command(const std::string &command)
@@ -146,7 +144,7 @@ namespace lsm
             }
             else
             {
-                return ""; // Empty string for not found
+                return "";
             }
         }
         catch (const std::exception &e)
@@ -176,7 +174,7 @@ namespace lsm
 
             if (results.empty())
             {
-                return ""; // Empty string for empty range
+                return "";
             }
 
             std::stringstream ss;
@@ -215,7 +213,7 @@ namespace lsm
 
     std::string LSMAdapter::handle_load(const std::string &command)
     {
-        // Extract filepath - need to handle quoted paths
+        // Extract filepath
         std::string filepath;
         size_t start_pos = command.find_first_of("\"'");
         if (start_pos == std::string::npos)
@@ -246,7 +244,7 @@ namespace lsm
 
         try
         {
-            // Use the optimized bulk loading method instead of the regular load
+            // Use the bulk loading 
             tree->bulk_load_file(filepath);
             std::cout << "Bulk load complete, returning success response" << std::endl;
             return "File loaded successfully: " + filepath;
@@ -313,7 +311,7 @@ namespace lsm
         }
 
         // If the stats are very large, truncate them and add a warning
-        const size_t MAX_STATS_SIZE = 8192; // Limit to 8KB
+        const size_t MAX_STATS_SIZE = 8192;
         if (stats.size() > MAX_STATS_SIZE)
         {
             std::string truncated = stats.substr(0, MAX_STATS_SIZE);
@@ -345,4 +343,4 @@ namespace lsm
         return tokens;
     }
 
-} // namespace lsm
+}

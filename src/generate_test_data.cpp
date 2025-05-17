@@ -84,7 +84,7 @@ std::vector<KeyValuePair> generate_uniform_data(size_t count, int64_t key_range)
     return data;
 }
 
-// Generate data with skewed (Zipf) distribution
+// Generate data with Zipf distribution
 std::vector<KeyValuePair> generate_skewed_data(size_t count, int64_t key_range, double alpha)
 {
     std::cout << "Generating skewed distribution data with Zipf alpha=" << alpha << "...\n";
@@ -122,8 +122,8 @@ std::vector<KeyValuePair> generate_skewed_data(size_t count, int64_t key_range, 
     keys.reserve(count);
 
     for (size_t i = 0; i < count * 2; i++)
-    {                                      // Generate more than needed to account for duplicates
-        keys.push_back(key_dist(gen) + 1); // +1 because keys start from 1
+    {
+        keys.push_back(key_dist(gen) + 1);
     }
 
     // Sort and remove duplicates

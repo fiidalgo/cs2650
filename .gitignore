@@ -5,3 +5,14 @@ project-desc.pdf
 data/
 venv/
 __pycache__/
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.tex
+figures/
+references.bib

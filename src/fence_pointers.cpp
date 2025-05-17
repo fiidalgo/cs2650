@@ -73,7 +73,7 @@ namespace lsm
     {
         if (fence_pointers.empty())
         {
-            return 0; // Start from the beginning if no fence pointers
+            return 0; 
         }
 
         // Binary search to find the appropriate fence pointer
@@ -87,7 +87,7 @@ namespace lsm
     {
         if (fence_pointers.empty())
         {
-            return {0, 0}; // No data
+            return {0, 0};
         }
 
         // Find the fence pointer for the start key
@@ -158,7 +158,7 @@ namespace lsm
 
         while (left < right)
         {
-            size_t mid = left + (right - left + 1) / 2; // Ceiling division
+            size_t mid = left + (right - left + 1) / 2;
 
             if (fence_pointers[mid].key <= key)
             {
@@ -173,4 +173,4 @@ namespace lsm
         return left;
     }
 
-} // namespace lsm
+}

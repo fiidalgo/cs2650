@@ -263,4 +263,4 @@ namespace lsm
                sizeof(SkipListNode) - sizeof(std::vector<SkipListNode *>);
     }
 
-} // namespace lsm
+}

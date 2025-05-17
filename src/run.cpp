@@ -100,15 +100,15 @@ namespace lsm
         {
             if (file_key == key)
             {
-                return value; // Found the key
+                return value;
             }
             if (file_key > key)
             {
-                break; // Passed the key, it doesn't exist
+                break;
             }
         }
 
-        return std::nullopt; // Key not found
+        return std::nullopt;
     }
 
     std::vector<KeyValuePair> Run::range(int64_t start_key, int64_t end_key) const
@@ -352,7 +352,7 @@ namespace lsm
         for (const auto &pair : data)
         {
             key_offsets.emplace_back(pair.key, offset);
-            offset += sizeof(int64_t) * 2; // Key + value
+            offset += sizeof(int64_t) * 2;
         }
 
         fence_pointers = std::make_unique<FencePointers>(get_data_filename(), key_offsets);
@@ -411,7 +411,7 @@ namespace lsm
     {
         if (!bloom_filter)
         {
-            return true; // No bloom filter, key might be present
+            return true;
         }
         return bloom_filter->might_contain(key);
     }
@@ -451,8 +451,6 @@ namespace lsm
 
     Run::~Run()
     {
-        // Destructor shouldn't delete files automatically since that could create issues
-        // with persistent storage and recovery. Explicit removal should be done via delete_files_from_disk()
     }
 
     void Run::delete_files_from_disk()
@@ -486,4 +484,4 @@ namespace lsm
         }
     }
 
-} // namespace lsm
+}

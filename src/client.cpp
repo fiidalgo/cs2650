@@ -173,7 +173,7 @@ namespace lsm
             throw std::runtime_error("Failed to send command: " + std::string(strerror(errno)));
         }
 
-        // Log that command was sent (for debugging)
+        // Log that command was sent
         std::cout << "Sent command: " << command << std::endl;
 
         // Check if this is a load command for a large file
@@ -191,10 +191,10 @@ namespace lsm
 
         // Wait for a response with appropriate timeout
         std::string response;
-        char buffer[4096]; // Use a larger buffer for receiving data
+        char buffer[4096];
 
         auto start_time = std::chrono::steady_clock::now();
-        auto timeout_duration = is_large_file_load ? std::chrono::hours(2) : std::chrono::minutes(2); // Increased default timeout
+        auto timeout_duration = is_large_file_load ? std::chrono::hours(2) : std::chrono::minutes(2);
 
         // Print the timeout details for debugging
         std::cout << "Waiting for server response with "
@@ -244,8 +244,8 @@ namespace lsm
             FD_SET(client_socket, &readfds);
 
             struct timeval tv;
-            tv.tv_sec = 0;       // Set to 0 seconds
-            tv.tv_usec = 500000; // 500ms timeout for more responsive UI
+            tv.tv_sec = 0;       
+            tv.tv_usec = 500000; 
 
             int select_result = select(client_socket + 1, &readfds, NULL, NULL, &tv);
 
@@ -263,7 +263,7 @@ namespace lsm
 
             if (select_result == 0)
             {
-                // Timeout on select, check if we received an ACK message for a long load operation
+                // Timeout on select
                 if (has_received_data && response.find("Processing load command") != std::string::npos)
                 {
                     // Found processing message, print progress dots
@@ -273,7 +273,7 @@ namespace lsm
                         std::cout << "." << std::flush;
                     }
                 }
-                continue; // Keep waiting for more data
+                continue;
             }
 
             if (FD_ISSET(client_socket, &readfds))
@@ -309,7 +309,7 @@ namespace lsm
                 buffer[bytes_read] = '\0';
                 response.append(buffer, bytes_read);
 
-                // Debug: log partial response
+                // log partial response
                 std::cout << "Received partial response (" << bytes_read << " bytes): "
                           << std::string(buffer, std::min(bytes_read, static_cast<ssize_t>(20)))
                           << (bytes_read > 20 ? "..." : "") << std::endl;
@@ -334,7 +334,7 @@ namespace lsm
                     // Complete response received, extract it
                     std::string complete_response = response.substr(0, delimiter_pos);
 
-                    // Debug: Log completion
+                    // Log completion
                     std::cout << "Complete response received (" << complete_response.length()
                               << " bytes) after "
                               << std::chrono::duration_cast<std::chrono::seconds>(
@@ -362,8 +362,7 @@ namespace lsm
 
     void Client::receive_responses()
     {
-        // This thread is now only used for asynchronous notifications,
-        // not for primary command-response handling
+        // This thread is now only used for asynchronous notifs
         char buffer[constants::BUFFER_SIZE];
 
         while (connected.load())
@@ -376,7 +375,7 @@ namespace lsm
             FD_SET(client_socket, &readfds);
 
             struct timeval timeout;
-            timeout.tv_sec = 1; // Check every second if we're still connected
+            timeout.tv_sec = 1;
             timeout.tv_usec = 0;
 
             int select_result = select(client_socket + 1, &readfds, NULL, NULL, &timeout);
@@ -387,13 +386,11 @@ namespace lsm
                 continue;
             }
 
-            // Skip receiving data in this thread - the main send_command function handles responses
+            // Skip receiving data in this thread. The main send_command function handles responses
             // We keep this thread only to check if the connection is alive
-            // This prevents interference with the main command-response flow
             if (FD_ISSET(client_socket, &readfds) && connected.load())
             {
-                // Don't actually read any data, just check if the socket is still connected
-                // by peeking at what's available, without consuming it
+                // check if the socket is still connected
                 char peek_buffer[1];
                 ssize_t peek_result = recv(client_socket, peek_buffer, 1, MSG_PEEK | MSG_DONTWAIT);
 
@@ -418,4 +415,4 @@ namespace lsm
         }
     }
 
-} // namespace lsm
+}

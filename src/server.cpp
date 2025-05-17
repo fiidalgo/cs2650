@@ -137,7 +137,7 @@ namespace lsm
                 std::cout << "Detaching client thread for socket: " << client.first << std::endl;
                 if (client.second && client.second->joinable())
                 {
-                    client.second->detach(); // Detach instead of join
+                    client.second->detach();
                 }
             }
             clients.clear();
@@ -254,7 +254,7 @@ namespace lsm
                 if (command == constants::CMD_EXIT)
                 {
                     std::cout << "Client requested disconnect (socket: " << client_socket << ")" << std::endl;
-                    goto cleanup; // Break out of both loops
+                    goto cleanup;
                 }
 
                 // Log received command
@@ -462,7 +462,7 @@ namespace lsm
         {
         case constants::CMD_HELP:
         {
-            // Special case for help command
+            
             auto tokens = split_string(command);
             if (tokens.size() > 1)
             {
@@ -471,7 +471,7 @@ namespace lsm
             return constants::HELP_TEXT;
         }
 
-        case constants::CMD_EXIT[0]: // Note: CMD_EXIT is now "q" instead of "EXIT"
+        case constants::CMD_EXIT[0]:
         {
             auto tokens = split_string(command);
             if (tokens.size() > 1)
@@ -481,7 +481,7 @@ namespace lsm
             return "Disconnecting...";
         }
 
-        case constants::CMD_LOAD: // Special handling for load command
+        case constants::CMD_LOAD:
         {
             try
             {
@@ -525,7 +525,7 @@ namespace lsm
             }
         }
 
-        case constants::CMD_STATS: // Special handling for stats command
+        case constants::CMD_STATS:
         {
             try
             {
@@ -587,4 +587,4 @@ namespace lsm
         }
     }
 
-} // namespace lsm
+}

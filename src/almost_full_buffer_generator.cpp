@@ -14,7 +14,7 @@ constexpr size_t PAIR_SIZE = sizeof(int64_t) * 2;
 size_t calc_pairs_for_almost_full_buffer()
 {
     // Max is BUFFER_SIZE_BYTES / PAIR_SIZE
-    // But we want one less than that to leave room for one more pair
+    // one less than that to leave room for one more pair
     return (lsm::constants::BUFFER_SIZE_BYTES / PAIR_SIZE) - 1;
 }
 
@@ -44,7 +44,7 @@ int main(int argc, char *argv[])
     std::mt19937_64 rng(rd());
     std::uniform_int_distribution<int64_t> dist(1, 1000000);
 
-    // Generate sorted keys (1 to num_pairs)
+    // Generate sorted keys
     std::vector<int64_t> keys(num_pairs);
     for (size_t i = 0; i < num_pairs; ++i)
     {

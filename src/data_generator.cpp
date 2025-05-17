@@ -18,7 +18,7 @@ constexpr size_t TARGET_SIZE = 10ULL * 1024 * 1024 * 1024;
 constexpr size_t NUM_PAIRS = TARGET_SIZE / KV_PAIR_SIZE;
 
 // Batch size for writing to reduce memory usage
-constexpr size_t BATCH_SIZE = 1000000; // 1 million pairs per batch
+constexpr size_t BATCH_SIZE = 1000000;
 
 // Structure to hold a key-value pair
 struct KeyValuePair
