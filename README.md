@@ -1,43 +1,55 @@
-# LSM-Tree Implementation
+# LSM-Tree
 
-This project implements a client-server architecture for an LSM-Tree (Log-Structured Merge-Tree) with a well-defined Domain-Specific Language (DSL) for interacting with the tree.
-
-## Current State
-
-- Client-server architecture fully implemented
-- Thread pool for handling concurrent client requests
-- Command parsing and validation
-- Input validation with error handling
-- Domain-Specific Language (DSL) interface
-
-The actual LSM-Tree implementation is planned for future development.
+This project implements a client-server architecture for an LSM-Tree (Log-Structured Merge-Tree).
 
 ## Project Structure
 
 - `include/`: Header files
-  - `constants.h`: System-wide constants and DSL definitions
-  - `thread_pool.h`: Thread pool implementation
-  - `server.h`: Server class definition
+
+  - `bloom_filter.h`: Bloom filter implementation for efficient lookups
   - `client.h`: Client class definition
+  - `constants.h`: System-wide constants and DSL definitions
+  - `fence_pointers.h`: Fence pointers for run indexing
+  - `lsm_adapter.h`: LSM-Tree adapter interface
+  - `lsm_tree.h`: Core LSM-Tree implementation
+  - `run.h`: Run management and operations
+  - `server.h`: Server class definition
+  - `skip_list.h`: Skip list implementation for memory buffer
+  - `thread_pool.h`: Thread pool implementation
+
 - `src/`: Source files
-  - `thread_pool.cpp`: Thread pool implementation
-  - `server.cpp`: Server implementation with command processing
+  - `bloom_filter.cpp`: Bloom filter implementation
   - `client.cpp`: Client implementation
-  - `main_server.cpp`: Server entry point
+  - `data_generator.cpp`: Test data generation utilities
+  - `data_generator_256mb.cpp`: Large dataset generator
+  - `fence_pointers.cpp`: Fence pointer implementation
+  - `lsm_adapter.cpp`: LSM-Tree adapter implementation
+  - `lsm_tree.cpp`: Core LSM-Tree functionality
   - `main_client.cpp`: Client entry point
+  - `main_server.cpp`: Server entry point
+  - `run.cpp`: Run operations implementation
+  - `server.cpp`: Server implementation with command processing
+  - `skip_list.cpp`: Skip list implementation
+  - `thread_pool.cpp`: Thread pool implementation
+  - `almost_full_buffer_generator.cpp`: Buffer testing utility
+  - `generate_test_data.cpp`: Test data generation tools
 
 ## Building the Project
 
-To build the project, run:
+To build all components of the project, run:
 
 ```bash
 make
 ```
 
-This will create two executables in the `bin/` directory:
+This will create the following executables in the `bin/` directory:
 
 - `server`: The LSM-Tree server
 - `client`: A client to interact with the server
+- `generate_test_data`: Utility for generating test data with different sizes and distributions
+- `data_generator`: Utility for generating 10GB test data
+- `data_generator_256mb`: Utility for generating 256MB test data
+- `almost_full_buffer_generator`: Utility for testing buffer management
 
 ## Running the Project
 
@@ -67,6 +79,51 @@ Or specify a custom host and port:
 
 ```bash
 ./bin/client 192.168.1.100 9091
+```
+
+### Generating Test Data
+
+The project includes several utilities for generating test data:
+
+1. Generate test data with specific size and distribution:
+
+```bash
+make generate-data
+```
+
+2. Generate a comprehensive test dataset:
+
+```bash
+make generate-test-data-all
+```
+
+This creates multiple files with different sizes (100MB, 256MB, 512MB, 1024MB) and distributions (uniform, skewed).
+
+3. Generate large datasets:
+
+```bash
+make generate-10gb      # Generates 10GB test data
+make generate-256mb     # Generates 256MB test data
+```
+
+4. Generate data for buffer testing:
+
+```bash
+make generate-almost-full
+```
+
+### Performance Testing
+
+Run performance tests across all dimensions:
+
+```bash
+make performance-test
+```
+
+Run performance test for a specific dimension:
+
+```bash
+make performance-test-dim DIMENSION=data_size
 ```
 
 ## Domain-Specific Language (DSL)
