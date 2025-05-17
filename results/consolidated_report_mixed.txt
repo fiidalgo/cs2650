@@ -1,0 +1,47 @@
+LSM-TREE PERFORMANCE REPORT - MIXED OPERATIONS
+================================================================================
+
+Generated: 2025-05-17 05:51:55
+
+Baseline Configuration:
+  buffer_size: 4096.0 KB
+  size_ratio: 4
+  thread_count: 4
+  data_size: 100.0 MB
+  data_distribution: uniform
+  query_distribution: uniform
+  read_write_ratio: 1
+  client_count: 1
+
+Dimension: Data Size
+  Tested values: 100.0 MB, 250.0 MB, 500.0 MB, 1024.0 MB
+  Plots: /Users/nico/code/lsm-tree/plots/data_size
+
+Dimension: Data Distribution
+  Tested values: uniform, skewed
+  Plots: /Users/nico/code/lsm-tree/plots/data_distribution
+
+Dimension: Query Distribution
+  Tested values: uniform, skewed
+  Plots: /Users/nico/code/lsm-tree/plots/query_distribution
+
+Dimension: Read-Write Ratio
+  Tested values: 10, 5, 1, 0.2, 0.1
+  Plots: /Users/nico/code/lsm-tree/plots/read_write_ratio
+
+Dimension: Buffer Size
+  Tested values: 4.0 KB, 16.0 KB, 64.0 KB, 256.0 KB, 1024.0 KB, 4096.0 KB, 16384.0 KB, 102400.0 KB
+  Plots: /Users/nico/code/lsm-tree/plots/buffer_size
+
+Dimension: Size Ratio Between Levels
+  Tested values: 2, 4, 6, 8, 10
+  Plots: /Users/nico/code/lsm-tree/plots/size_ratio
+
+Dimension: Thread Count
+  Tested values: 1, 2, 4, 8, 16
+  Plots: /Users/nico/code/lsm-tree/plots/thread_count
+
+Dimension: Client Count
+  Tested values: 1, 2, 4, 8, 16, 32, 64
+  Plots: /Users/nico/code/lsm-tree/plots/client_count
+

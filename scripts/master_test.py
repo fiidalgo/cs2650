@@ -223,6 +223,9 @@ def start_server(env_vars=None):
     # Enable debug output in the server
     env["LSMTREE_DEBUG"] = "1"
     
+    # Create event for server ready detection
+    server_ready_event = threading.Event()
+    
     # Start the server with stdout/stderr connected directly to pipes
     server_bin = os.path.join(BIN_DIR, "server")
     server_proc = subprocess.Popen(
@@ -258,6 +261,7 @@ def start_server(env_vars=None):
             # Check for server started message to know when it's ready
             if "Server started on port" in line:
                 debug_print(f"Server detected as ready on port")
+                server_ready_event.set()
     
     # Start monitoring stdout and stderr
     stdout_thread = threading.Thread(
@@ -276,21 +280,30 @@ def start_server(env_vars=None):
     stdout_thread.start()
     stderr_thread.start()
     
-    # Wait a moment for the server to start
-    time.sleep(2)
+    # Wait for the server to signal it's ready via the event
+    # with a reasonable timeout to prevent hanging
+    max_wait_time = 30  # seconds
+    server_start_timeout = time.time() + max_wait_time
     
-    # Check if server is running
-    if server_proc.poll() is not None:
-        print(f"Server failed to start. Exit code: {server_proc.returncode}")
-        log_file.close()
-        sys.exit(1)
+    debug_print(f"Waiting up to {max_wait_time} seconds for server to be ready...")
+    while not server_ready_event.is_set() and time.time() < server_start_timeout:
+        # Check if server is still running
+        if server_proc.poll() is not None:
+            print(f"Server failed to start. Exit code: {server_proc.returncode}")
+            log_file.close()
+            sys.exit(1)
+        time.sleep(0.1)
     
-    print("Server started successfully")
+    if not server_ready_event.is_set():
+        print(f"Warning: Server didn't signal ready state after {max_wait_time} seconds")
+        print("Proceeding anyway, but connections may fail...")
+    else:
+        print("Server started successfully")
     
-    # Wait for the server to fully initialize and start listening on the port
-    # This is important to prevent connection failures when clients connect immediately
-    time.sleep(3)  # Increased wait time to ensure the server is fully ready
-    debug_print("Added extra delay to ensure server is fully initialized")
+    # Wait additional time after server reports ready to ensure the socket is actually accepting connections
+    additional_delay = 3  # seconds
+    debug_print(f"Adding {additional_delay}s extra delay to ensure server is fully initialized")
+    time.sleep(additional_delay)
     
     # Store the log file in the server process object so we can close it later
     server_proc.log_file = log_file
@@ -321,91 +334,139 @@ def load_data(data_file):
     completion_event = bulk_load_tracker.create_event(data_file)
     debug_print(f"Created completion event for {data_file}")
     
-    # Run the client with load command
+    # Run the client with load command - with retries
     start_time = time.time()
     debug_print(f"Starting client process at {time.strftime('%H:%M:%S')}")
     
-    client_bin = os.path.join(BIN_DIR, "client")
-    client_proc = subprocess.Popen(
-        [client_bin],
-        stdin=open(load_file, 'r'),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
-    )
+    # Add retry mechanism for connection
+    max_retries = 10
+    retry_delay = 1.0  # seconds
+    success = False
     
-    debug_print(f"Client process started with PID: {client_proc.pid}")
+    debug_print(f"Using retry mechanism - will attempt up to {max_retries} times with {retry_delay}s between attempts")
     
     try:
-        # For larger data sizes, we need a longer timeout
-        # Calculate timeout based on data size (approximately 1 minute per 10MB)
-        file_size_mb = file_size_bytes / (1024 * 1024)
-        timeout_seconds = max(300, int(file_size_mb / 10) * 60)  # Minimum 5 minutes, or 1 minute per 10MB
-        
-        debug_print(f"Waiting for load to complete with timeout of {timeout_seconds} seconds")
-        
-        # Poll for either client completion or bulk load completion detection
-        elapsed_time_calculated = False
-        wait_start_time = time.time()
-        
-        while True:
-            # Check if bulk load completed via log detection
-            if completion_event.is_set():
-                elapsed = time.time() - start_time
-                debug_print(f"Bulk load detected as successful in logs! Elapsed time: {elapsed:.2f} seconds")
-                # Kill the client as we're done
-                client_proc.kill()
-                elapsed_time_calculated = True
-                break
+        for retry in range(max_retries):
+            client_bin = os.path.join(BIN_DIR, "client")
+            debug_print(f"Connection attempt {retry+1}/{max_retries}")
             
-            # Check if client exited
-            if client_proc.poll() is not None:
-                elapsed = time.time() - start_time
-                debug_print(f"Client exited with code: {client_proc.returncode}")
-                elapsed_time_calculated = True
-                break
+            client_proc = subprocess.Popen(
+                [client_bin],
+                stdin=open(load_file, 'r'),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
             
-            # Check if we've timed out
-            if time.time() - wait_start_time > timeout_seconds:
-                elapsed = time.time() - start_time
-                debug_print(f"Timed out after {timeout_seconds} seconds waiting for load to complete")
-                client_proc.kill()
-                elapsed_time_calculated = False
-                break
+            debug_print(f"Client process started with PID: {client_proc.pid}")
             
-            # Wait a bit before checking again
+            # Wait for a short time to see if connection was established
             time.sleep(0.5)
-        
-        # If client didn't exit, wait for it to finish with a short timeout
-        if client_proc.poll() is None:
-            try:
-                stdout, stderr = client_proc.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                client_proc.kill()
+            
+            # Check if client has already exited (which would indicate a connection failure)
+            if client_proc.poll() is not None:
                 stdout, stderr = client_proc.communicate()
-        else:
-            stdout, stderr = client_proc.communicate()
+                if "Connection refused" in stderr:
+                    debug_print(f"Connection attempt {retry+1} failed: Connection refused")
+                    if retry < max_retries - 1:
+                        debug_print(f"Waiting {retry_delay}s before next attempt...")
+                        time.sleep(retry_delay)
+                        # Increase retry delay slightly each time
+                        retry_delay *= 1.2
+                    continue
+            
+            # If we reach here, either connection was established or client exited for a different reason
+            debug_print(f"Connection established or client exited for another reason")
+            
+            try:
+                # For larger data sizes, we need a longer timeout
+                # Calculate timeout based on data size (approximately 1 minute per 10MB)
+                file_size_mb = file_size_bytes / (1024 * 1024)
+                timeout_seconds = max(300, int(file_size_mb / 10) * 60)  # Minimum 5 minutes, or 1 minute per 10MB
+                
+                debug_print(f"Waiting for load to complete with timeout of {timeout_seconds} seconds")
+                
+                # Poll for either client completion or bulk load completion detection
+                elapsed_time_calculated = False
+                wait_start_time = time.time()
+                
+                while True:
+                    # Check if bulk load completed via log detection
+                    if completion_event.is_set():
+                        elapsed = time.time() - start_time
+                        debug_print(f"Bulk load detected as successful in logs! Elapsed time: {elapsed:.2f} seconds")
+                        # Kill the client as we're done
+                        client_proc.kill()
+                        elapsed_time_calculated = True
+                        success = True
+                        break
+                    
+                    # Check if client exited
+                    if client_proc.poll() is not None:
+                        stdout, stderr = client_proc.communicate()
+                        elapsed = time.time() - start_time
+                        debug_print(f"Client exited with code: {client_proc.returncode}")
+                        
+                        if client_proc.returncode == 0:
+                            success = True
+                            elapsed_time_calculated = True
+                            break
+                        else:
+                            # Check error message
+                            if "Connection refused" in stderr:
+                                # This was a connection failure, try again
+                                debug_print(f"Connection was initially established but later refused")
+                                if retry < max_retries - 1:
+                                    debug_print(f"Waiting {retry_delay}s before next attempt...")
+                                    time.sleep(retry_delay)
+                                    # Increase retry delay slightly each time
+                                    retry_delay *= 1.2
+                                elapsed_time_calculated = True
+                                break
+                    
+                    # Check if we've timed out
+                    if time.time() - wait_start_time > timeout_seconds:
+                        elapsed = time.time() - start_time
+                        debug_print(f"Timed out after {timeout_seconds} seconds waiting for load to complete")
+                        client_proc.kill()
+                        elapsed_time_calculated = False
+                        break
+                    
+                    # Wait a bit before checking again
+                    time.sleep(0.5)
+                
+                # If client didn't exit, wait for it to finish with a short timeout
+                if client_proc.poll() is None:
+                    try:
+                        stdout, stderr = client_proc.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        client_proc.kill()
+                        stdout, stderr = client_proc.communicate()
+                
+                if not elapsed_time_calculated:
+                    elapsed = time.time() - start_time
+                
+                debug_print(f"Load attempt {retry+1} completed in {elapsed:.2f} seconds")
+                
+                if success:
+                    debug_print(f"Data loaded successfully on attempt {retry+1}!")
+                    break
+            
+            except Exception as e:
+                debug_print(f"Exception during loading attempt {retry+1}: {str(e)}")
+                client_proc.kill()
+                success = False
         
-        if not elapsed_time_calculated:
-            elapsed = time.time() - start_time
-        
-        debug_print(f"Load completed in {elapsed:.2f} seconds")
-        
-        # Clean up the completion event
+        # Clean up the completion event regardless of outcome
         bulk_load_tracker.cleanup(data_file)
         
-        if completion_event.is_set() or client_proc.returncode == 0:
-            debug_print(f"Data loaded successfully!")
+        if success:
+            debug_print(f"Data loaded successfully after {retry+1} attempts!")
             return True
         else:
-            debug_print(f"Load failed with exit code: {client_proc.returncode}")
-            debug_print(f"STDERR: {stderr}")
+            debug_print(f"All {max_retries} load attempts failed.")
             return False
-    except Exception as e:
-        debug_print(f"Exception during loading: {str(e)}")
-        client_proc.kill()
-        bulk_load_tracker.cleanup(data_file)
-        return False
+            
     finally:
         if os.path.exists(load_file):
             os.remove(load_file)
@@ -422,50 +483,98 @@ def verify_data_loaded():
         f.write("q\n")
     
     try:
-        client_bin = os.path.join(BIN_DIR, "client")
-        client_proc = subprocess.Popen(
-            [client_bin],
-            stdin=open(stats_file, 'r'),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
+        # Add retry mechanism for connection
+        max_retries = 5
+        retry_delay = 1.0  # seconds
         
-        stdout, stderr = client_proc.communicate(timeout=10)
+        debug_print(f"Using retry mechanism for stats check - will attempt up to {max_retries} times")
         
-        if client_proc.returncode == 0:
-            # Check if data is loaded by looking for entries and logical pairs
-            stats_lines = [line for line in stdout.split('\n') if "entries" in line.lower() or "logical pairs" in line.lower()]
+        for retry in range(max_retries):
+            debug_print(f"Stats check attempt {retry+1}/{max_retries}")
             
-            # Look for both mentions of entries and the Logical Pairs count
-            entries_found = any(line for line in stats_lines if "0 entries" not in line)
-            logical_pairs_line = next((line for line in stats_lines if "logical pairs" in line.lower()), None)
-            
-            if entries_found or (logical_pairs_line and "0" not in logical_pairs_line.split(":")[1].strip()):
-                debug_print("Data verified: Found non-zero entries or logical pairs")
-                for line in stats_lines:
-                    debug_print(f"  {line}")
+            try:
+                client_bin = os.path.join(BIN_DIR, "client")
+                client_proc = subprocess.Popen(
+                    [client_bin],
+                    stdin=open(stats_file, 'r'),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
                 
-                # Additional check for run files in data directory - just informational now
-                runs_dir = os.path.join(DATA_DIR, "runs")
-                if os.path.exists(runs_dir):
-                    run_files = os.listdir(runs_dir)
-                    debug_print(f"Found {len(run_files)} run files: {run_files}")
+                # Wait briefly to see if connection is established
+                time.sleep(0.5)
+                
+                # Check if client has already exited (which would indicate a connection failure)
+                if client_proc.poll() is not None:
+                    stdout, stderr = client_proc.communicate()
+                    if "Connection refused" in stderr:
+                        debug_print(f"Stats check attempt {retry+1} failed: Connection refused")
+                        if retry < max_retries - 1:
+                            debug_print(f"Waiting {retry_delay}s before next attempt...")
+                            time.sleep(retry_delay)
+                            # Increase retry delay slightly each time
+                            retry_delay *= 1.2
+                        continue
+                
+                # Connection was established or client exited for another reason
+                stdout, stderr = client_proc.communicate(timeout=10)
+                
+                if client_proc.returncode == 0:
+                    # Check if data is loaded by looking for entries and logical pairs
+                    stats_lines = [line for line in stdout.split('\n') if "entries" in line.lower() or "logical pairs" in line.lower()]
+                    
+                    # Look for both mentions of entries and the Logical Pairs count
+                    entries_found = any(line for line in stats_lines if "0 entries" not in line)
+                    logical_pairs_line = next((line for line in stats_lines if "logical pairs" in line.lower()), None)
+                    
+                    if entries_found or (logical_pairs_line and "0" not in logical_pairs_line.split(":")[1].strip()):
+                        debug_print("Data verified: Found non-zero entries or logical pairs")
+                        for line in stats_lines:
+                            debug_print(f"  {line}")
+                        
+                        # Additional check for run files in data directory - just informational now
+                        runs_dir = os.path.join(DATA_DIR, "runs")
+                        if os.path.exists(runs_dir):
+                            run_files = os.listdir(runs_dir)
+                            debug_print(f"Found {len(run_files)} run files: {run_files}")
+                        else:
+                            debug_print("No runs directory found - data may still be in buffer only")
+                        
+                        return True
+                    else:
+                        debug_print("No data found in the LSM-tree!")
+                        if retry < max_retries - 1:
+                            debug_print("Will try again to confirm...")
+                            time.sleep(retry_delay)
+                            continue
+                        return False
                 else:
-                    debug_print("No runs directory found - data may still be in buffer only")
-                
-                return True
-            else:
-                debug_print("No data found in the LSM-tree!")
+                    debug_print(f"Stats check failed with exit code: {client_proc.returncode}")
+                    debug_print(f"STDERR: {stderr}")
+                    if retry < max_retries - 1:
+                        debug_print(f"Waiting {retry_delay}s before next attempt...")
+                        time.sleep(retry_delay)
+                        # Increase retry delay slightly each time
+                        retry_delay *= 1.2
+                        continue
+                    return False
+                    
+            except subprocess.TimeoutExpired:
+                debug_print("Stats command timed out")
+                client_proc.kill()
+                if retry < max_retries - 1:
+                    debug_print(f"Waiting {retry_delay}s before next attempt...")
+                    time.sleep(retry_delay)
+                    # Increase retry delay slightly each time
+                    retry_delay *= 1.2
+                    continue
                 return False
-        else:
-            debug_print(f"Stats check failed with exit code: {client_proc.returncode}")
-            debug_print(f"STDERR: {stderr}")
-            return False
-            
-    except subprocess.TimeoutExpired:
-        debug_print("Stats command timed out")
+        
+        # If we reach here, all retries failed
+        debug_print(f"All {max_retries} stats check attempts failed")
         return False
+        
     finally:
         if os.path.exists(stats_file):
             os.remove(stats_file)
@@ -709,46 +818,83 @@ def run_benchmark_test(operation="mixed", query_distribution="uniform", read_wri
         if client_count == 1:
             # Single client is simple
             client_bin = os.path.join(BIN_DIR, "client")
-            client_proc = subprocess.Popen(
-                [client_bin],
-                stdin=open(bench_file, 'r'),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
             
-            try:
-                # Increased timeout for larger datasets - 5 minutes
-                stdout, stderr = client_proc.communicate(timeout=300)
+            # Add retry mechanism for connection
+            max_retries = 5
+            retry_delay = 1.0  # seconds
+            success = False
+            
+            debug_print(f"Using retry mechanism for benchmark - will attempt up to {max_retries} times")
+            
+            for retry in range(max_retries):
+                debug_print(f"Benchmark attempt {retry+1}/{max_retries}")
                 
-                elapsed = time.time() - start_time
-                print(f"Benchmark completed in {elapsed:.2f} seconds")
+                client_proc = subprocess.Popen(
+                    [client_bin],
+                    stdin=open(bench_file, 'r'),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
                 
-                if client_proc.returncode == 0:
-                    # Extract metrics - pass the actual executed operations
-                    metrics = extract_metrics(stdout, operations_executed, elapsed, read_operations_executed, write_operations_executed)
+                # Wait briefly to see if connection is established
+                time.sleep(0.5)
+                
+                # Check if client has already exited (which would indicate a connection failure)
+                if client_proc.poll() is not None:
+                    stdout, stderr = client_proc.communicate()
+                    if "Connection refused" in stderr:
+                        debug_print(f"Benchmark attempt {retry+1} failed: Connection refused")
+                        if retry < max_retries - 1:
+                            debug_print(f"Waiting {retry_delay}s before next attempt...")
+                            time.sleep(retry_delay)
+                            # Increase retry delay slightly each time
+                            retry_delay *= 1.2
+                        continue
+                
+                try:
+                    # Increased timeout for larger datasets - 5 minutes
+                    stdout, stderr = client_proc.communicate(timeout=300)
                     
-                    print("\nExtracted Metrics:")
-                    for metric, value in metrics.items():
-                        if value is not None:
-                            print(f"  {metric}: {value}")
-                            
-                        # Save full output for debugging
-                        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                        output_file = os.path.join(RESULTS_DIR, f"benchmark_{operation}_{timestamp}.txt")
-                        with open(output_file, 'w') as f:
-                            f.write(stdout)
+                    elapsed = time.time() - start_time
+                    print(f"Benchmark completed in {elapsed:.2f} seconds")
                     
-                    return True, metrics
-                else:
-                    print(f"Benchmark failed with exit code: {client_proc.returncode}")
-                    print(f"STDERR: {stderr}")
+                    if client_proc.returncode == 0:
+                        success = True
+                        # Extract metrics - pass the actual executed operations
+                        metrics = extract_metrics(stdout, operations_executed, elapsed, read_operations_executed, write_operations_executed)
+                        
+                        print("\nExtracted Metrics:")
+                        for metric, value in metrics.items():
+                            if value is not None:
+                                print(f"  {metric}: {value}")
+                                
+                            # Save full output for debugging
+                            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                            output_file = os.path.join(RESULTS_DIR, f"benchmark_{operation}_{timestamp}.txt")
+                            with open(output_file, 'w') as f:
+                                f.write(stdout)
+                        
+                        return True, metrics
+                    else:
+                        print(f"Benchmark failed with exit code: {client_proc.returncode}")
+                        print(f"STDERR: {stderr}")
+                        if retry < max_retries - 1:
+                            debug_print(f"Retrying benchmark...")
+                            continue
+                        return False, None
+                        
+                except subprocess.TimeoutExpired:
+                    print(f"Benchmark timed out after 5 minutes")
+                    client_proc.kill()
+                    if retry < max_retries - 1:
+                        debug_print(f"Retrying benchmark after timeout...")
+                        continue
                     return False, None
-                    
-            except subprocess.TimeoutExpired:
-                print(f"Benchmark timed out after 5 minutes")
-                client_proc.kill()
-                return False, None
+            
+            # If we reach here, all retries failed
+            print(f"All {max_retries} benchmark attempts failed")
+            return False, None
         else:
             # Run multiple clients in parallel
             import queue
@@ -818,6 +964,10 @@ def save_metrics_to_csv(dimension, values, metrics_dict, operation, plot_dir):
     """Save metrics for a dimension to a CSV file"""
     os.makedirs(plot_dir, exist_ok=True)
     
+    print(f"DEBUG: Saving metrics to CSV for dimension {dimension} with {len(metrics_dict)} entries")
+    print(f"DEBUG: Values for {dimension}: {values}")
+    print(f"DEBUG: Metrics keys: {list(metrics_dict.keys())}")
+    
     csv_file = os.path.join(plot_dir, f"{dimension}_{operation}_metrics.csv")
     
     # Define the fields
@@ -847,6 +997,9 @@ def save_metrics_to_csv(dimension, values, metrics_dict, operation, plot_dir):
 def generate_plots(dimension, values, metrics_dict, operation, plot_dir, config):
     """Generate plots for the dimension test results"""
     print(f"\nGenerating plots for {dimension}...")
+    print(f"DEBUG: Plot directory: {plot_dir}")
+    print(f"DEBUG: Number of values with metrics: {len([v for v in values if v in metrics_dict])}")
+    
     os.makedirs(plot_dir, exist_ok=True)
     
     # Only plot values that have metrics
@@ -855,215 +1008,270 @@ def generate_plots(dimension, values, metrics_dict, operation, plot_dir, config)
     if not plot_values:
         print("No metrics to plot")
         return []
-        
-    # Get display values (scaled) and labels
-    scale_factor = config["scale_factor"]
-    units = config["units"]
     
-    # Special handling for read_write_ratio to make them evenly spaced
-    if dimension == "read_write_ratio":
-        # Use even spacing for plotting
-        x_positions = list(range(len(plot_values)))
+    print(f"DEBUG: Plot values: {plot_values}")
+    
+    try:
+        # Get display values (scaled) and labels
+        scale_factor = config["scale_factor"]
+        units = config["units"]
         
-        # Create labels for the x-axis that show the actual ratio values
-        if all(isinstance(v, (int, float)) for v in plot_values):
-            # Format the labels based on whether they're > 1 (read-biased) or < 1 (write-biased)
-            x_labels = []
-            for v in plot_values:
-                if v >= 1:
-                    x_labels.append(f"{int(v)}:1")  # e.g., "10:1" for read-biased
-                else:
-                    x_labels.append(f"1:{int(1/v)}")  # e.g., "1:10" for write-biased
+        # Special handling for read_write_ratio to make them evenly spaced
+        if dimension == "read_write_ratio":
+            # Use even spacing for plotting
+            x_positions = list(range(len(plot_values)))
+            
+            # Create labels for the x-axis that show the actual ratio values
+            if all(isinstance(v, (int, float)) for v in plot_values):
+                # Format the labels based on whether they're > 1 (read-biased) or < 1 (write-biased)
+                x_labels = []
+                for v in plot_values:
+                    if v >= 1:
+                        x_labels.append(f"{int(v)}:1")  # e.g., "10:1" for read-biased
+                    else:
+                        x_labels.append(f"1:{int(1/v)}")  # e.g., "1:10" for write-biased
+            else:
+                x_labels = [str(v) for v in plot_values]
+            
+            x_values = x_positions
         else:
-            x_labels = [str(v) for v in plot_values]
+            x_values = [v * scale_factor for v in plot_values] if isinstance(plot_values[0], (int, float)) else plot_values
+            x_labels = x_values
         
-        x_values = x_positions
-    else:
-        x_values = [v * scale_factor for v in plot_values] if isinstance(plot_values[0], (int, float)) else plot_values
-        x_labels = x_values
-    
-    dimension_name = config["name"]
-    
-    # Create read and write I/O operations plot
-    plt.figure(figsize=(10, 6))
-    read_ios = [metrics_dict[v].get('read_ios', 0) for v in plot_values]
-    write_ios = [metrics_dict[v].get('write_ios', 0) for v in plot_values]
-    
-    # Use bar charts for data_distribution and query_distribution
-    if dimension in ["data_distribution", "query_distribution"]:
-        bar_width = 0.35
-        x_pos = range(len(x_values))
+        dimension_name = config["name"]
         
-        plt.bar([p - bar_width/2 for p in x_pos], read_ios, bar_width, label='Read I/Os')
-        plt.bar([p + bar_width/2 for p in x_pos], write_ios, bar_width, label='Write I/Os')
-        plt.xticks(x_pos, x_labels)
-    else:
-        plt.plot(x_values, read_ios, 'o-', linewidth=2, markersize=8, label='Read I/Os')
-        plt.plot(x_values, write_ios, 's-', linewidth=2, markersize=8, label='Write I/Os')
-        plt.xticks(x_values, x_labels)
-    
-    plt.title(f'I/O Operations vs. {dimension_name} ({operation.upper()} operations)')
-    plt.xlabel(f'{dimension_name} ({units})' if units else dimension_name)
-    plt.ylabel('I/O Operations')
-    plt.grid(True)
-    plt.legend()
-    
-    io_plot = os.path.join(plot_dir, f"{dimension}_{operation}_io.png")
-    plt.savefig(io_plot)
-    plt.close()
-    
-    # Create throughput plot with separate read/write lines
-    plt.figure(figsize=(10, 6))
-    total_throughputs = [metrics_dict[v].get('throughput', 0) for v in plot_values]
-    read_throughputs = [metrics_dict[v].get('read_throughput', 0) for v in plot_values]
-    write_throughputs = [metrics_dict[v].get('write_throughput', 0) for v in plot_values]
-    
-    # Make sure read_throughputs has valid values (not None)
-    read_throughputs = [0 if t is None else t for t in read_throughputs]
-    write_throughputs = [0 if t is None else t for t in write_throughputs]
-    
-    # Debugging the throughput values to check what's being plotted
-    print(f"Debug - Read throughputs: {read_throughputs}")
-    print(f"Debug - Write throughputs: {write_throughputs}")
-    print(f"Debug - Total throughputs: {total_throughputs}")
-    
-    # Use bar charts for data_distribution and query_distribution
-    if dimension in ["data_distribution", "query_distribution"]:
-        bar_width = 0.3
-        x_pos = range(len(x_values))
+        print(f"DEBUG: Creating I/O operations plot")
         
-        plt.bar([p - bar_width for p in x_pos], read_throughputs, bar_width, label='Read Throughput')
-        plt.bar([p for p in x_pos], total_throughputs, bar_width, label='Total Throughput')
-        plt.bar([p + bar_width for p in x_pos], write_throughputs, bar_width, label='Write Throughput')
-        plt.xticks(x_pos, x_labels)
-    else:
-        plt.plot(x_values, read_throughputs, 'o-', linewidth=2, markersize=8, label='Read Throughput', color='blue')
-        plt.plot(x_values, total_throughputs, '*-', linewidth=2, markersize=8, label='Total Throughput', color='green')
-        plt.plot(x_values, write_throughputs, 's-', linewidth=2, markersize=8, label='Write Throughput', color='red')
-        plt.xticks(x_values, x_labels)
-    
-    plt.title(f'Throughput vs. {dimension_name} ({operation.upper()} operations)')
-    plt.xlabel(f'{dimension_name} ({units})' if units else dimension_name)
-    plt.ylabel('Throughput (ops/sec)')
-    plt.grid(True)
-    plt.legend()
-    
-    throughput_plot = os.path.join(plot_dir, f"{dimension}_{operation}_throughput.png")
-    plt.savefig(throughput_plot)
-    plt.close()
-    
-    # Create runtime per operation plot with separate read/write lines
-    plt.figure(figsize=(10, 6))
-    total_runtime_per_op = [metrics_dict[v].get('runtime_per_op', 0) for v in plot_values]
-    read_runtime_per_op = [metrics_dict[v].get('read_runtime_per_op', 0) for v in plot_values]
-    write_runtime_per_op = [metrics_dict[v].get('write_runtime_per_op', 0) for v in plot_values]
-    
-    # Make sure runtime values are valid (not None)
-    read_runtime_per_op = [0 if t is None else t for t in read_runtime_per_op]
-    write_runtime_per_op = [0 if t is None else t for t in write_runtime_per_op]
-    
-    # Debugging the runtime values to check what's being plotted
-    print(f"Debug - Read runtime per op: {read_runtime_per_op}")
-    print(f"Debug - Write runtime per op: {write_runtime_per_op}")
-    print(f"Debug - Total runtime per op: {total_runtime_per_op}")
-    
-    # Use bar charts for data_distribution and query_distribution
-    if dimension in ["data_distribution", "query_distribution"]:
-        bar_width = 0.3
-        x_pos = range(len(x_values))
+        # Create read and write I/O operations plot
+        plt.figure(figsize=(10, 6))
+        read_ios = [metrics_dict[v].get('read_ios', 0) for v in plot_values]
+        write_ios = [metrics_dict[v].get('write_ios', 0) for v in plot_values]
         
-        plt.bar([p - bar_width for p in x_pos], read_runtime_per_op, bar_width, label='Read Runtime')
-        plt.bar([p for p in x_pos], total_runtime_per_op, bar_width, label='Total Runtime')
-        plt.bar([p + bar_width for p in x_pos], write_runtime_per_op, bar_width, label='Write Runtime')
-        plt.xticks(x_pos, x_labels)
-    else:
-        plt.plot(x_values, read_runtime_per_op, 'o-', linewidth=2, markersize=8, label='Read Runtime per Op', color='blue')
-        plt.plot(x_values, total_runtime_per_op, '*-', linewidth=2, markersize=8, label='Overall Runtime per Op', color='green')
-        plt.plot(x_values, write_runtime_per_op, 's-', linewidth=2, markersize=8, label='Write Runtime per Op', color='red')
-        plt.xticks(x_values, x_labels)
-    
-    # Use logarithmic scale for y-axis to better visualize wide range of values
-    plt.yscale('log')
-    
-    plt.title(f'Runtime per Operation vs. {dimension_name} ({operation.upper()} operations)')
-    plt.xlabel(f'{dimension_name} ({units})' if units else dimension_name)
-    plt.ylabel('Runtime (ms/op) - Log Scale')
-    plt.grid(True, which="both", ls="-")
-    plt.legend()
-    
-    runtime_plot = os.path.join(plot_dir, f"{dimension}_{operation}_runtime_per_op.png")
-    plt.savefig(runtime_plot)
-    plt.close()
-    
-    # Create a second runtime plot with linear scale for reference
-    plt.figure(figsize=(10, 6))
-    if dimension in ["data_distribution", "query_distribution"]:
-        bar_width = 0.3
-        x_pos = range(len(x_values))
+        # Use bar charts for data_distribution and query_distribution
+        if dimension in ["data_distribution", "query_distribution"]:
+            bar_width = 0.35
+            x_pos = range(len(x_values))
+            
+            plt.bar([p - bar_width/2 for p in x_pos], read_ios, bar_width, label='Read I/Os')
+            plt.bar([p + bar_width/2 for p in x_pos], write_ios, bar_width, label='Write I/Os')
+            plt.xticks(x_pos, x_labels)
+        else:
+            plt.plot(x_values, read_ios, 'o-', linewidth=2, markersize=8, label='Read I/Os')
+            plt.plot(x_values, write_ios, 's-', linewidth=2, markersize=8, label='Write I/Os')
+            plt.xticks(x_values, x_labels)
+            
+            # Use logarithmic x-axis for buffer_size
+            if dimension == "buffer_size":
+                plt.xscale('log')
+                plt.grid(True, which="both", ls="-")
         
-        plt.bar([p - bar_width for p in x_pos], read_runtime_per_op, bar_width, label='Read Runtime')
-        plt.bar([p for p in x_pos], total_runtime_per_op, bar_width, label='Total Runtime')
-        plt.bar([p + bar_width for p in x_pos], write_runtime_per_op, bar_width, label='Write Runtime')
-        plt.xticks(x_pos, x_labels)
-    else:
-        plt.plot(x_values, read_runtime_per_op, 'o-', linewidth=2, markersize=8, label='Read Runtime per Op', color='blue')
-        plt.plot(x_values, total_runtime_per_op, '*-', linewidth=2, markersize=8, label='Overall Runtime per Op', color='green')
-        plt.plot(x_values, write_runtime_per_op, 's-', linewidth=2, markersize=8, label='Write Runtime per Op', color='red')
-        plt.xticks(x_values, x_labels)
-    
-    plt.title(f'Runtime per Operation vs. {dimension_name} ({operation.upper()} operations)')
-    plt.xlabel(f'{dimension_name} ({units})' if units else dimension_name)
-    plt.ylabel('Runtime (ms/op) - Linear Scale')
-    plt.grid(True)
-    
-    linear_runtime_plot = os.path.join(plot_dir, f"{dimension}_{operation}_runtime_per_op_linear.png")
-    plt.savefig(linear_runtime_plot)
-    plt.close()
-    
-    # Keep the total runtime plot for reference
-    plt.figure(figsize=(10, 6))
-    runtimes = [metrics_dict[v].get('runtime', 0) for v in plot_values]
-    
-    # Use bar charts for data_distribution and query_distribution
-    if dimension in ["data_distribution", "query_distribution"]:
-        plt.bar(x_values, runtimes)
-        plt.xticks(range(len(x_values)), x_labels)
-    else:
-        plt.plot(x_values, runtimes, 'o-', linewidth=2, markersize=8)
-        plt.xticks(x_values, x_labels)
-    
-    plt.title(f'Total Runtime vs. {dimension_name} ({operation.upper()} operations)')
-    plt.xlabel(f'{dimension_name} ({units})' if units else dimension_name)
-    plt.ylabel('Total Runtime (seconds)')
-    plt.grid(True)
-    
-    total_runtime_plot = os.path.join(plot_dir, f"{dimension}_{operation}_total_runtime.png")
-    plt.savefig(total_runtime_plot)
-    plt.close()
-    
-    # Create cache misses plot
-    plt.figure(figsize=(10, 6))
-    cache_misses = [metrics_dict[v].get('cache_misses', 0) for v in plot_values]
-    
-    # Use bar charts for data_distribution and query_distribution
-    if dimension in ["data_distribution", "query_distribution"]:
-        plt.bar(x_values, cache_misses)
-        plt.xticks(range(len(x_values)), x_labels)
-    else:
-        plt.plot(x_values, cache_misses, 'o-', linewidth=2, markersize=8)
-        plt.xticks(x_values, x_labels)
-    
-    plt.title(f'Cache Misses vs. {dimension_name} ({operation.upper()} operations)')
-    plt.xlabel(f'{dimension_name} ({units})' if units else dimension_name)
-    plt.ylabel('Cache Misses')
-    plt.grid(True)
-    
-    cache_plot = os.path.join(plot_dir, f"{dimension}_{operation}_cache_misses.png")
-    plt.savefig(cache_plot)
-    plt.close()
-    
-    print(f"Generated plots for {dimension} in {plot_dir}")
-    return [io_plot, throughput_plot, runtime_plot, linear_runtime_plot, total_runtime_plot, cache_plot]
+        plt.title(f'I/O Operations vs. {dimension_name} ({operation.upper()} operations)')
+        plt.xlabel(f'{dimension_name} ({units})' if units else dimension_name)
+        plt.ylabel('I/O Operations')
+        plt.grid(True)
+        plt.legend()
+        
+        io_plot = os.path.join(plot_dir, f"{dimension}_{operation}_io.png")
+        plt.savefig(io_plot)
+        plt.close()
+        
+        print(f"DEBUG: Saved I/O plot to {io_plot}")
+        print(f"DEBUG: Creating throughput plot")
+        
+        # Create throughput plot with separate read/write lines
+        plt.figure(figsize=(10, 6))
+        total_throughputs = [metrics_dict[v].get('throughput', 0) for v in plot_values]
+        read_throughputs = [metrics_dict[v].get('read_throughput', 0) for v in plot_values]
+        write_throughputs = [metrics_dict[v].get('write_throughput', 0) for v in plot_values]
+        
+        # Make sure read_throughputs has valid values (not None)
+        read_throughputs = [0 if t is None else t for t in read_throughputs]
+        write_throughputs = [0 if t is None else t for t in write_throughputs]
+        
+        # Debugging the throughput values to check what's being plotted
+        print(f"Debug - Read throughputs: {read_throughputs}")
+        print(f"Debug - Write throughputs: {write_throughputs}")
+        print(f"Debug - Total throughputs: {total_throughputs}")
+        
+        # Use bar charts for data_distribution and query_distribution
+        if dimension in ["data_distribution", "query_distribution"]:
+            bar_width = 0.3
+            x_pos = range(len(x_values))
+            
+            plt.bar([p - bar_width for p in x_pos], read_throughputs, bar_width, label='Read Throughput')
+            plt.bar([p for p in x_pos], total_throughputs, bar_width, label='Total Throughput')
+            plt.bar([p + bar_width for p in x_pos], write_throughputs, bar_width, label='Write Throughput')
+            plt.xticks(x_pos, x_labels)
+        else:
+            plt.plot(x_values, read_throughputs, 'o-', linewidth=2, markersize=8, label='Read Throughput', color='blue')
+            plt.plot(x_values, total_throughputs, '*-', linewidth=2, markersize=8, label='Total Throughput', color='green')
+            plt.plot(x_values, write_throughputs, 's-', linewidth=2, markersize=8, label='Write Throughput', color='red')
+            plt.xticks(x_values, x_labels)
+            
+            # Use logarithmic x-axis for buffer_size
+            if dimension == "buffer_size":
+                plt.xscale('log')
+                plt.grid(True, which="both", ls="-")
+        
+        plt.title(f'Throughput vs. {dimension_name} ({operation.upper()} operations)')
+        plt.xlabel(f'{dimension_name} ({units})' if units else dimension_name)
+        plt.ylabel('Throughput (ops/sec)')
+        plt.grid(True)
+        plt.legend()
+        
+        throughput_plot = os.path.join(plot_dir, f"{dimension}_{operation}_throughput.png")
+        plt.savefig(throughput_plot)
+        plt.close()
+        
+        print(f"DEBUG: Saved throughput plot to {throughput_plot}")
+        print(f"DEBUG: Creating runtime per operation plot")
+        
+        # Create runtime per operation plot with separate read/write lines
+        plt.figure(figsize=(10, 6))
+        total_runtime_per_op = [metrics_dict[v].get('runtime_per_op', 0) for v in plot_values]
+        read_runtime_per_op = [metrics_dict[v].get('read_runtime_per_op', 0) for v in plot_values]
+        write_runtime_per_op = [metrics_dict[v].get('write_runtime_per_op', 0) for v in plot_values]
+        
+        # Make sure runtime values are valid (not None)
+        read_runtime_per_op = [0 if t is None else t for t in read_runtime_per_op]
+        write_runtime_per_op = [0 if t is None else t for t in write_runtime_per_op]
+        
+        # Debugging the runtime values to check what's being plotted
+        print(f"Debug - Read runtime per op: {read_runtime_per_op}")
+        print(f"Debug - Write runtime per op: {write_runtime_per_op}")
+        print(f"Debug - Total runtime per op: {total_runtime_per_op}")
+        
+        # Use bar charts for data_distribution and query_distribution
+        if dimension in ["data_distribution", "query_distribution"]:
+            bar_width = 0.3
+            x_pos = range(len(x_values))
+            
+            plt.bar([p - bar_width for p in x_pos], read_runtime_per_op, bar_width, label='Read Runtime')
+            plt.bar([p for p in x_pos], total_runtime_per_op, bar_width, label='Total Runtime')
+            plt.bar([p + bar_width for p in x_pos], write_runtime_per_op, bar_width, label='Write Runtime')
+            plt.xticks(x_pos, x_labels)
+        else:
+            plt.plot(x_values, read_runtime_per_op, 'o-', linewidth=2, markersize=8, label='Read Runtime per Op', color='blue')
+            plt.plot(x_values, total_runtime_per_op, '*-', linewidth=2, markersize=8, label='Overall Runtime per Op', color='green')
+            plt.plot(x_values, write_runtime_per_op, 's-', linewidth=2, markersize=8, label='Write Runtime per Op', color='red')
+            plt.xticks(x_values, x_labels)
+            
+            # Use logarithmic x-axis for buffer_size
+            if dimension == "buffer_size":
+                plt.xscale('log')
+        
+        # Use logarithmic scale for y-axis to better visualize wide range of values
+        plt.yscale('log')
+        
+        plt.title(f'Runtime per Operation vs. {dimension_name} ({operation.upper()} operations)')
+        plt.xlabel(f'{dimension_name} ({units})' if units else dimension_name)
+        plt.ylabel('Runtime (ms/op) - Log Scale')
+        plt.grid(True, which="both", ls="-")
+        plt.legend()
+        
+        runtime_plot = os.path.join(plot_dir, f"{dimension}_{operation}_runtime_per_op.png")
+        plt.savefig(runtime_plot)
+        plt.close()
+        
+        print(f"DEBUG: Saved runtime per operation plot to {runtime_plot}")
+        print(f"DEBUG: Creating a second runtime plot with linear scale for reference")
+        
+        # Create a second runtime plot with linear scale for reference
+        plt.figure(figsize=(10, 6))
+        if dimension in ["data_distribution", "query_distribution"]:
+            bar_width = 0.3
+            x_pos = range(len(x_values))
+            
+            plt.bar([p - bar_width for p in x_pos], read_runtime_per_op, bar_width, label='Read Runtime')
+            plt.bar([p for p in x_pos], total_runtime_per_op, bar_width, label='Total Runtime')
+            plt.bar([p + bar_width for p in x_pos], write_runtime_per_op, bar_width, label='Write Runtime')
+            plt.xticks(x_pos, x_labels)
+        else:
+            plt.plot(x_values, read_runtime_per_op, 'o-', linewidth=2, markersize=8, label='Read Runtime per Op', color='blue')
+            plt.plot(x_values, total_runtime_per_op, '*-', linewidth=2, markersize=8, label='Overall Runtime per Op', color='green')
+            plt.plot(x_values, write_runtime_per_op, 's-', linewidth=2, markersize=8, label='Write Runtime per Op', color='red')
+            plt.xticks(x_values, x_labels)
+            
+            # Use logarithmic x-axis for buffer_size
+            if dimension == "buffer_size":
+                plt.xscale('log')
+        
+        plt.title(f'Runtime per Operation vs. {dimension_name} ({operation.upper()} operations)')
+        plt.xlabel(f'{dimension_name} ({units})' if units else dimension_name)
+        plt.ylabel('Runtime (ms/op) - Linear Scale')
+        plt.grid(True)
+        plt.legend()
+        
+        linear_runtime_plot = os.path.join(plot_dir, f"{dimension}_{operation}_runtime_per_op_linear.png")
+        plt.savefig(linear_runtime_plot)
+        plt.close()
+        
+        print(f"DEBUG: Saved linear runtime per operation plot to {linear_runtime_plot}")
+        print(f"DEBUG: Keeping total runtime plot for reference")
+        
+        # Keep the total runtime plot for reference
+        plt.figure(figsize=(10, 6))
+        runtimes = [metrics_dict[v].get('runtime', 0) for v in plot_values]
+        
+        # Use bar charts for data_distribution and query_distribution
+        if dimension in ["data_distribution", "query_distribution"]:
+            plt.bar(x_values, runtimes)
+            plt.xticks(range(len(x_values)), x_labels)
+        else:
+            plt.plot(x_values, runtimes, 'o-', linewidth=2, markersize=8)
+            plt.xticks(x_values, x_labels)
+            
+            # Use logarithmic x-axis for buffer_size
+            if dimension == "buffer_size":
+                plt.xscale('log')
+        
+        plt.title(f'Total Runtime vs. {dimension_name} ({operation.upper()} operations)')
+        plt.xlabel(f'{dimension_name} ({units})' if units else dimension_name)
+        plt.ylabel('Total Runtime (seconds)')
+        plt.grid(True)
+        
+        total_runtime_plot = os.path.join(plot_dir, f"{dimension}_{operation}_total_runtime.png")
+        plt.savefig(total_runtime_plot)
+        plt.close()
+        
+        print(f"DEBUG: Saved total runtime plot to {total_runtime_plot}")
+        print(f"DEBUG: Creating cache misses plot")
+        
+        # Create cache misses plot
+        plt.figure(figsize=(10, 6))
+        cache_misses = [metrics_dict[v].get('cache_misses', 0) for v in plot_values]
+        
+        # Use bar charts for data_distribution and query_distribution
+        if dimension in ["data_distribution", "query_distribution"]:
+            plt.bar(x_values, cache_misses)
+            plt.xticks(range(len(x_values)), x_labels)
+        else:
+            plt.plot(x_values, cache_misses, 'o-', linewidth=2, markersize=8)
+            plt.xticks(x_values, x_labels)
+            
+            # Use logarithmic x-axis for buffer_size
+            if dimension == "buffer_size":
+                plt.xscale('log')
+        
+        plt.title(f'Cache Misses vs. {dimension_name} ({operation.upper()} operations)')
+        plt.xlabel(f'{dimension_name} ({units})' if units else dimension_name)
+        plt.ylabel('Cache Misses')
+        plt.grid(True)
+        
+        cache_plot = os.path.join(plot_dir, f"{dimension}_{operation}_cache_misses.png")
+        plt.savefig(cache_plot)
+        plt.close()
+        
+        print(f"DEBUG: Saved cache misses plot to {cache_plot}")
+        print(f"DEBUG: All plots generated successfully for {dimension}")
+        
+        return [io_plot, throughput_plot, runtime_plot, linear_runtime_plot, total_runtime_plot, cache_plot]
+        
+    except Exception as e:
+        print(f"ERROR: Exception during plot generation: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return []
 
 def test_dimension(dimension, operation="get", auto_continue=True):
     """Run tests for a specific dimension with all its values"""
@@ -1135,7 +1343,10 @@ def test_dimension(dimension, operation="get", auto_continue=True):
                                                        client_count=BASELINE["client_count"])
                 
                 if success and metrics:
+                    print(f"DEBUG: Got metrics for {dimension}={value}: {metrics}")
                     metrics_dict[value] = metrics
+                else:
+                    print(f"DEBUG: No metrics for {dimension}={value}, success={success}")
                 
             finally:
                 # Clean up server
@@ -1171,7 +1382,10 @@ def test_dimension(dimension, operation="get", auto_continue=True):
                 # Run benchmark test
                 success, metrics = run_benchmark_test(operation)
                 if success and metrics:
+                    print(f"DEBUG: Got metrics for {dimension}={value}: {metrics}")
                     metrics_dict[value] = metrics
+                else:
+                    print(f"DEBUG: No metrics for {dimension}={value}, success={success}")
                 
             finally:
                 # Clean up server
@@ -1207,6 +1421,7 @@ def test_dimension(dimension, operation="get", auto_continue=True):
                 # Run benchmark test with specified query distribution
                 success, metrics = run_benchmark_test(operation, query_distribution=value)
                 if success and metrics:
+                    print(f"DEBUG: Got metrics for {dimension}={value}: {metrics}")
                     metrics_dict[value] = metrics
                 
             finally:
@@ -1245,6 +1460,7 @@ def test_dimension(dimension, operation="get", auto_continue=True):
                                                      query_distribution=BASELINE["query_distribution"],
                                                      read_write_ratio=value)
                 if success and metrics:
+                    print(f"DEBUG: Got metrics for {dimension}={value}: {metrics}")
                     metrics_dict[value] = metrics
                 
             finally:
@@ -1284,6 +1500,7 @@ def test_dimension(dimension, operation="get", auto_continue=True):
                                                     read_write_ratio=BASELINE["read_write_ratio"],
                                                     client_count=value)
                 if success and metrics:
+                    print(f"DEBUG: Got metrics for {dimension}={value}: {metrics}")
                     metrics_dict[value] = metrics
                 
             finally:
@@ -1324,6 +1541,7 @@ def test_dimension(dimension, operation="get", auto_continue=True):
                 # Run benchmark test
                 success, metrics = run_benchmark_test(operation)
                 if success and metrics:
+                    print(f"DEBUG: Got metrics for {dimension}={value}: {metrics}")
                     metrics_dict[value] = metrics
                     
             finally:
@@ -1338,12 +1556,14 @@ def test_dimension(dimension, operation="get", auto_continue=True):
     
     # If we collected metrics, save to CSV and generate plots
     if metrics_dict:
-        save_metrics_to_csv(dimension, values, metrics_dict, operation, plot_dir)
+        print(f"DEBUG: Collected metrics for {len(metrics_dict)} values of {dimension}")
+        csv_file = save_metrics_to_csv(dimension, values, metrics_dict, operation, plot_dir)
+        print(f"DEBUG: About to generate plots for {dimension} with CSV file {csv_file}")
         generate_plots(dimension, values, metrics_dict, operation, plot_dir, config)
         print(f"\nCompleted testing for {dimension} dimension")
         return True
     else:
-        print(f"\nNo metrics collected for {dimension} dimension!")
+        print(f"\nDEBUG: No metrics collected for {dimension} dimension!")
         return False
 
 def run_performance_benchmark():
