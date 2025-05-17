@@ -4,6 +4,7 @@
 #include <iostream>
 #include <string>
 #include <signal.h>
+#include <sstream>
 
 // Global client instance for signal handling
 lsm::Client *g_client = nullptr;
@@ -16,6 +17,38 @@ void signal_handler(int signal)
         std::cout << "Caught signal " << signal << ", disconnecting..." << std::endl;
         g_client->disconnect();
         exit(0);
+    }
+}
+
+// Utility function to process and display the server's response
+void display_response(const std::string &command, const std::string &response)
+{
+    // Special case for stats command - it already has its own formatting
+    if (command.length() > 0 && command[0] == 's')
+    {
+        std::cout << response << std::endl;
+        return;
+    }
+
+    // For get command that returned a value
+    if (command.length() > 0 && command[0] == 'g' && !response.empty())
+    {
+        std::cout << response << std::endl;
+        return;
+    }
+
+    // For other commands with responses
+    if (!response.empty())
+    {
+        std::cout << "Response: " << response << std::endl;
+    }
+    else
+    {
+        // Empty response could mean key not found for get command
+        if (command.length() > 0 && command[0] == 'g')
+        {
+            std::cout << "Key not found" << std::endl;
+        }
     }
 }
 
@@ -84,7 +117,7 @@ int main(int argc, char *argv[])
             try
             {
                 std::string response = client.send_command(command);
-                std::cout << "Response: " << response << std::endl;
+                display_response(command, response);
             }
             catch (const std::exception &e)
             {

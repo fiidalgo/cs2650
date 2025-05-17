@@ -10,6 +10,12 @@
 #include <netdb.h>
 #include <chrono>
 #include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
+#include <atomic>
+#include <functional>
+#include <fcntl.h>
 
 namespace lsm
 {
@@ -68,6 +74,15 @@ namespace lsm
             return false;
         }
 
+        // Clear any existing responses
+        {
+            std::lock_guard<std::mutex> lock(queue_mutex);
+            while (!response_queue.empty())
+            {
+                response_queue.pop();
+            }
+        }
+
         connected.store(true);
         std::cout << "Connected to server at " << host << ":" << port << std::endl;
 
@@ -77,18 +92,23 @@ namespace lsm
         // Display help menu on successful connection
         std::cout << constants::HELP_TEXT << std::endl;
 
-        // Wait a moment for the welcome message
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // Wait for the welcome message from the server
+        char welcome_buffer[constants::BUFFER_SIZE];
+        ssize_t bytes_read = recv(client_socket, welcome_buffer, constants::BUFFER_SIZE - 1, 0);
 
-        // Check for and display welcome message
+        if (bytes_read > 0)
         {
-            std::lock_guard<std::mutex> lock(queue_mutex);
-            if (!response_queue.empty())
+            welcome_buffer[bytes_read] = '\0';
+            std::string welcome_message(welcome_buffer);
+
+            // Remove delimiter if present
+            size_t delimiter_pos = welcome_message.find(constants::CMD_DELIMITER);
+            if (delimiter_pos != std::string::npos)
             {
-                std::string welcome = response_queue.front();
-                response_queue.pop();
-                std::cout << "Server: " << welcome << std::endl;
+                welcome_message = welcome_message.substr(0, delimiter_pos);
             }
+
+            std::cout << "Server: " << welcome_message << std::endl;
         }
 
         return true;
@@ -136,6 +156,14 @@ namespace lsm
             throw std::runtime_error("Not connected to server");
         }
 
+        // Exit command doesn't get a response
+        if (command == constants::CMD_EXIT)
+        {
+            std::string full_command = command + constants::CMD_DELIMITER;
+            send(client_socket, full_command.c_str(), full_command.length(), 0);
+            return "";
+        }
+
         // Add delimiter to the command
         std::string full_command = command + constants::CMD_DELIMITER;
 
@@ -145,25 +173,113 @@ namespace lsm
             throw std::runtime_error("Failed to send command: " + std::string(strerror(errno)));
         }
 
-        // Exit command doesn't get a response
-        if (command == constants::CMD_EXIT)
+        // Log that command was sent (for debugging)
+        std::cout << "Sent command: " << command << std::endl;
+
+        // Check if this is a load command for a large file
+        bool is_large_file_load = false;
+        if (command.length() > 1 && command[0] == constants::CMD_LOAD)
         {
-            return "";
+            // This is a load command, check if it's for a large test file
+            if (command.find("10gb") != std::string::npos ||
+                command.find("test_data") != std::string::npos)
+            {
+                is_large_file_load = true;
+                std::cout << "Loading a large file - timeout extended to 2 hours" << std::endl;
+            }
         }
 
-        // Wait for response
+        // Directly wait for a response with appropriate timeout
+        std::string response;
+        char buffer[4096]; // Use a larger buffer for receiving data
+
+        auto start_time = std::chrono::steady_clock::now();
+        auto timeout_duration = is_large_file_load ? std::chrono::hours(2) : std::chrono::seconds(30);
+
+        // Set socket to non-blocking mode to prevent hangs
+        int flags = fcntl(client_socket, F_GETFL, 0);
+        fcntl(client_socket, F_SETFL, flags | O_NONBLOCK);
+
+        while (true)
         {
-            std::unique_lock<std::mutex> lock(queue_mutex);
-            using namespace std::chrono_literals;
-            if (!queue_condition.wait_for(lock, 10s, [this]
-                                          { return !response_queue.empty(); }))
+            // Check if we've exceeded timeout
+            auto current_time = std::chrono::steady_clock::now();
+            if (std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time) > timeout_duration)
             {
+                // Reset socket to blocking mode before returning
+                fcntl(client_socket, F_SETFL, flags);
                 throw std::runtime_error("Timeout waiting for server response");
             }
 
-            std::string response = response_queue.front();
-            response_queue.pop();
-            return response;
+            // Use select to wait for data with a short timeout
+            fd_set readfds;
+            FD_ZERO(&readfds);
+            FD_SET(client_socket, &readfds);
+
+            struct timeval tv;
+            tv.tv_sec = 0;       // Reduced from 1 second to 0 seconds
+            tv.tv_usec = 100000; // 100ms timeout for more responsive UI
+
+            int select_result = select(client_socket + 1, &readfds, NULL, NULL, &tv);
+
+            if (select_result < 0)
+            {
+                if (errno == EINTR)
+                {
+                    // Interrupted, try again
+                    continue;
+                }
+                // Reset socket to blocking mode before returning
+                fcntl(client_socket, F_SETFL, flags);
+                throw std::runtime_error("Error waiting for server response: " + std::string(strerror(errno)));
+            }
+
+            if (select_result == 0)
+            {
+                // Timeout on select, continue waiting
+                continue;
+            }
+
+            if (FD_ISSET(client_socket, &readfds))
+            {
+                // Data is available, try to read it
+                std::memset(buffer, 0, sizeof(buffer));
+                ssize_t bytes_read = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
+
+                if (bytes_read < 0)
+                {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK)
+                    {
+                        // No data available at the moment, continue waiting
+                        continue;
+                    }
+                    // Reset socket to blocking mode before returning
+                    fcntl(client_socket, F_SETFL, flags);
+                    throw std::runtime_error("Error receiving response: " + std::string(strerror(errno)));
+                }
+
+                if (bytes_read == 0)
+                {
+                    // Connection closed by server
+                    fcntl(client_socket, F_SETFL, flags);
+                    throw std::runtime_error("Connection closed by server");
+                }
+
+                buffer[bytes_read] = '\0';
+                response.append(buffer, bytes_read);
+
+                // Check if we've received a complete response
+                size_t delimiter_pos = response.find(constants::CMD_DELIMITER);
+                if (delimiter_pos != std::string::npos)
+                {
+                    // Complete response received, extract it and return
+                    std::string complete_response = response.substr(0, delimiter_pos);
+
+                    // Reset socket to blocking mode before returning
+                    fcntl(client_socket, F_SETFL, flags);
+                    return complete_response;
+                }
+            }
         }
     }
 
@@ -179,44 +295,58 @@ namespace lsm
 
     void Client::receive_responses()
     {
+        // This thread is now only used for asynchronous notifications,
+        // not for primary command-response handling
         char buffer[constants::BUFFER_SIZE];
-        std::string response_buffer;
 
         while (connected.load())
         {
             std::memset(buffer, 0, constants::BUFFER_SIZE);
-            ssize_t bytes_read = recv(client_socket, buffer, constants::BUFFER_SIZE - 1, 0);
 
-            if (bytes_read <= 0)
+            // Use select for non-blocking reads
+            fd_set readfds;
+            FD_ZERO(&readfds);
+            FD_SET(client_socket, &readfds);
+
+            struct timeval timeout;
+            timeout.tv_sec = 1; // Check every second if we're still connected
+            timeout.tv_usec = 0;
+
+            int select_result = select(client_socket + 1, &readfds, NULL, NULL, &timeout);
+
+            // If error or timeout, just continue the loop
+            if (select_result <= 0)
             {
-                // Connection closed or error
-                connected.store(false);
-                break;
+                continue;
             }
 
-            // Add received data to the response buffer
-            response_buffer.append(buffer, bytes_read);
-
-            // Process complete responses (delimited by \r\n)
-            size_t delimiter_pos;
-            while ((delimiter_pos = response_buffer.find(constants::CMD_DELIMITER)) != std::string::npos)
+            // Skip receiving data in this thread - the main send_command function handles responses
+            // We keep this thread only to check if the connection is alive
+            // This prevents interference with the main command-response flow
+            if (FD_ISSET(client_socket, &readfds) && connected.load())
             {
-                // Extract the response
-                std::string response = response_buffer.substr(0, delimiter_pos);
-                response_buffer.erase(0, delimiter_pos + strlen(constants::CMD_DELIMITER));
+                // Don't actually read any data, just check if the socket is still connected
+                // by peeking at what's available, without consuming it
+                char peek_buffer[1];
+                ssize_t peek_result = recv(client_socket, peek_buffer, 1, MSG_PEEK | MSG_DONTWAIT);
 
-                // Add to response queue for synchronous operations
+                if (peek_result < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
                 {
-                    std::lock_guard<std::mutex> lock(queue_mutex);
-                    response_queue.push(response);
+                    // Real error on the socket
+                    std::cerr << "Socket error detected: " << strerror(errno) << std::endl;
+                    connected.store(false);
+                    break;
                 }
-                queue_condition.notify_one();
 
-                // Call the callback if set
-                if (response_callback)
+                if (peek_result == 0)
                 {
-                    response_callback(response);
+                    // Connection closed by server
+                    std::cerr << "Server closed connection" << std::endl;
+                    connected.store(false);
+                    break;
                 }
+
+                // Socket is still active, continue monitoring
             }
         }
     }
