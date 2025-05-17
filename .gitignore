@@ -3,3 +3,5 @@ bin/
 obj/
 project-desc.pdf
 data/
+venv/
+__pycache__/

@@ -189,26 +189,53 @@ namespace lsm
             }
         }
 
-        // Directly wait for a response with appropriate timeout
+        // Wait for a response with appropriate timeout
         std::string response;
         char buffer[4096]; // Use a larger buffer for receiving data
 
         auto start_time = std::chrono::steady_clock::now();
-        auto timeout_duration = is_large_file_load ? std::chrono::hours(2) : std::chrono::seconds(30);
+        auto timeout_duration = is_large_file_load ? std::chrono::hours(2) : std::chrono::minutes(2); // Increased default timeout
+
+        // Print the timeout details for debugging
+        std::cout << "Waiting for server response with "
+                  << (is_large_file_load ? "extended timeout (2 hours)" : "standard timeout (2 minutes)")
+                  << std::endl;
 
         // Set socket to non-blocking mode to prevent hangs
         int flags = fcntl(client_socket, F_GETFL, 0);
         fcntl(client_socket, F_SETFL, flags | O_NONBLOCK);
 
+        // Track partial responses and progress
+        auto last_activity = std::chrono::steady_clock::now();
+        bool has_received_data = false;
+        size_t total_bytes_received = 0;
+
         while (true)
         {
-            // Check if we've exceeded timeout
+            // Check if we've exceeded timeout, but if we've received data recently, give extra time
             auto current_time = std::chrono::steady_clock::now();
-            if (std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time) > timeout_duration)
+            auto time_since_start = std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time);
+            auto time_since_activity = std::chrono::duration_cast<std::chrono::seconds>(current_time - last_activity);
+
+            // Only time out if we've exceeded total timeout or have been inactive for over a minute
+            bool timeout_exceeded = time_since_start > timeout_duration;
+            bool inactive_too_long = has_received_data && time_since_activity > std::chrono::minutes(1);
+
+            if (timeout_exceeded && (!has_received_data || inactive_too_long))
             {
                 // Reset socket to blocking mode before returning
                 fcntl(client_socket, F_SETFL, flags);
-                throw std::runtime_error("Timeout waiting for server response");
+
+                // Form a helpful error message
+                std::string error_msg = "Timeout waiting for server response after " +
+                                        std::to_string(time_since_start.count()) +
+                                        " seconds";
+                if (has_received_data)
+                {
+                    error_msg += " (received " + std::to_string(total_bytes_received) +
+                                 " bytes, but response was incomplete)";
+                }
+                throw std::runtime_error(error_msg);
             }
 
             // Use select to wait for data with a short timeout
@@ -217,8 +244,8 @@ namespace lsm
             FD_SET(client_socket, &readfds);
 
             struct timeval tv;
-            tv.tv_sec = 0;       // Reduced from 1 second to 0 seconds
-            tv.tv_usec = 100000; // 100ms timeout for more responsive UI
+            tv.tv_sec = 0;       // Set to 0 seconds
+            tv.tv_usec = 500000; // 500ms timeout for more responsive UI
 
             int select_result = select(client_socket + 1, &readfds, NULL, NULL, &tv);
 
@@ -236,8 +263,17 @@ namespace lsm
 
             if (select_result == 0)
             {
-                // Timeout on select, continue waiting
-                continue;
+                // Timeout on select, check if we received an ACK message for a long load operation
+                if (has_received_data && response.find("Processing load command") != std::string::npos)
+                {
+                    // Found processing message, print progress dots
+                    auto seconds = std::chrono::duration_cast<std::chrono::seconds>(time_since_activity).count();
+                    if (seconds > 0 && seconds % 5 == 0)
+                    {
+                        std::cout << "." << std::flush;
+                    }
+                }
+                continue; // Keep waiting for more data
             }
 
             if (FD_ISSET(client_socket, &readfds))
@@ -265,15 +301,46 @@ namespace lsm
                     throw std::runtime_error("Connection closed by server");
                 }
 
+                // Update activity time and flags
+                last_activity = std::chrono::steady_clock::now();
+                has_received_data = true;
+                total_bytes_received += bytes_read;
+
                 buffer[bytes_read] = '\0';
                 response.append(buffer, bytes_read);
+
+                // Debug: log partial response
+                std::cout << "Received partial response (" << bytes_read << " bytes): "
+                          << std::string(buffer, std::min(bytes_read, static_cast<ssize_t>(20)))
+                          << (bytes_read > 20 ? "..." : "") << std::endl;
+
+                // Check if this is an acknowledgment for a load command
+                if (command[0] == constants::CMD_LOAD &&
+                    response.find("Processing load command") != std::string::npos &&
+                    response.find(constants::CMD_DELIMITER) != std::string::npos)
+                {
+                    // This is just an acknowledgment, continue waiting for the actual response
+                    std::cout << "Received load acknowledgment, waiting for final response..." << std::endl;
+
+                    // Clear the response buffer and continue waiting
+                    response.clear();
+                    continue;
+                }
 
                 // Check if we've received a complete response
                 size_t delimiter_pos = response.find(constants::CMD_DELIMITER);
                 if (delimiter_pos != std::string::npos)
                 {
-                    // Complete response received, extract it and return
+                    // Complete response received, extract it
                     std::string complete_response = response.substr(0, delimiter_pos);
+
+                    // Debug: Log completion
+                    std::cout << "Complete response received (" << complete_response.length()
+                              << " bytes) after "
+                              << std::chrono::duration_cast<std::chrono::seconds>(
+                                     std::chrono::steady_clock::now() - start_time)
+                                     .count()
+                              << " seconds" << std::endl;
 
                     // Reset socket to blocking mode before returning
                     fcntl(client_socket, F_SETFL, flags);

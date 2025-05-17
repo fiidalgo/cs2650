@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstdint>
 #include <optional>
+#include <chrono>
 #include "constants.h"
 
 // Forward declarations
@@ -108,6 +109,17 @@ namespace lsm
         // Batch operations
         void load_file(const std::string &filepath);
 
+        // Optimized bulk loading path
+        void bulk_load_file(const std::string &filepath);
+
+        // Buffer size management for loading
+        size_t get_buffer_size() const;
+        void set_buffer_size(size_t new_size);
+
+        // Compaction control for loading
+        bool is_compaction_enabled() const;
+        void set_compaction_enabled(bool enabled);
+
         // Management operations
         void compact();
         void rebuild_filters();
@@ -118,6 +130,20 @@ namespace lsm
 
         // Get string representation of compaction strategy
         std::string get_strategy_name(CompactionStrategy strategy) const;
+
+        // I/O statistics tracking
+        void increment_read_io();
+        void increment_write_io();
+        size_t get_read_io_count() const;
+        size_t get_write_io_count() const;
+        void reset_io_stats();
+
+        // Operation timing metrics
+        double get_avg_read_time_ms() const;
+        double get_avg_write_time_ms() const;
+        size_t get_read_count() const;
+        size_t get_write_count() const;
+        void reset_timing_stats();
 
     private:
         // In-memory buffer (skip list)
@@ -131,6 +157,16 @@ namespace lsm
 
         // For synchronization
         mutable std::mutex tree_mutex;
+
+        // I/O operation counters
+        std::atomic<size_t> read_io_count{0};
+        std::atomic<size_t> write_io_count{0};
+
+        // Operation timing metrics
+        std::atomic<size_t> read_count{0};
+        std::atomic<size_t> write_count{0};
+        std::atomic<double> total_read_time_ms{0.0};
+        std::atomic<double> total_write_time_ms{0.0};
 
         // Internal methods
         void flush_buffer();

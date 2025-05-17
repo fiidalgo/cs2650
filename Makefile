@@ -5,9 +5,10 @@ INCLUDES = -I./include
 SRC_DIR = src
 OBJ_DIR = obj
 BIN_DIR = bin
+SCRIPT_DIR = scripts
 
 # Create directories if they don't exist
-$(shell mkdir -p $(OBJ_DIR) $(BIN_DIR))
+$(shell mkdir -p $(OBJ_DIR) $(BIN_DIR) $(SCRIPT_DIR))
 
 # LSM-tree objects
 LSM_OBJS = $(OBJ_DIR)/lsm_adapter.o $(OBJ_DIR)/lsm_tree.o $(OBJ_DIR)/skip_list.o \
@@ -66,6 +67,10 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp
 clean:
 	rm -rf $(OBJ_DIR)/* $(BIN_DIR)/*
 
+# Create data directories
+create-data-dirs:
+	mkdir -p data/test_data
+
 # Run server
 run-server: $(BIN_DIR)/server
 	$(BIN_DIR)/server
@@ -75,8 +80,8 @@ run-client: $(BIN_DIR)/client
 	$(BIN_DIR)/client
 
 # Generate test data
-generate-data: $(BIN_DIR)/generate_test_data
-	$(BIN_DIR)/generate_test_data data/test_data.bin 10000
+generate-data: $(BIN_DIR)/generate_test_data create-data-dirs
+	$(BIN_DIR)/generate_test_data --size 100 --distribution uniform --output data/test_data/100mb_uniform.bin
 
 # Generate 10GB test data
 generate-10gb: $(BIN_DIR)/data_generator
@@ -90,4 +95,24 @@ generate-256mb: $(BIN_DIR)/data_generator_256mb
 generate-almost-full: $(BIN_DIR)/almost_full_buffer_generator
 	$(BIN_DIR)/almost_full_buffer_generator data/almost_full_buffer.bin
 
-.PHONY: all clean run-server run-client generate-data generate-10gb generate-256mb generate-almost-full 
+# Run performance tests for all dimensions
+performance-test: $(BIN_DIR)/server $(BIN_DIR)/client $(BIN_DIR)/generate_test_data
+	python3 $(SCRIPT_DIR)/performance_test.py --dimension all
+
+# Run performance test for a specific dimension
+# Usage: make performance-test-dim DIMENSION=data_size
+performance-test-dim: $(BIN_DIR)/server $(BIN_DIR)/client $(BIN_DIR)/generate_test_data
+	python3 $(SCRIPT_DIR)/performance_test.py --dimension $(DIMENSION)
+
+# Generate test data files for different sizes and distributions
+generate-test-data-all: $(BIN_DIR)/generate_test_data create-data-dirs
+	$(BIN_DIR)/generate_test_data --size 100 --distribution uniform --output data/test_data/100mb_uniform.bin
+	$(BIN_DIR)/generate_test_data --size 100 --distribution skewed --output data/test_data/100mb_skewed.bin
+	$(BIN_DIR)/generate_test_data --size 256 --distribution uniform --output data/test_data/256mb_uniform.bin
+	$(BIN_DIR)/generate_test_data --size 256 --distribution skewed --output data/test_data/256mb_skewed.bin
+	$(BIN_DIR)/generate_test_data --size 512 --distribution uniform --output data/test_data/512mb_uniform.bin
+	$(BIN_DIR)/generate_test_data --size 512 --distribution skewed --output data/test_data/512mb_skewed.bin
+	$(BIN_DIR)/generate_test_data --size 1024 --distribution uniform --output data/test_data/1024mb_uniform.bin
+	$(BIN_DIR)/generate_test_data --size 1024 --distribution skewed --output data/test_data/1024mb_skewed.bin
+
+.PHONY: all clean run-server run-client generate-data generate-10gb generate-256mb generate-almost-full create-data-dirs performance-test performance-test-dim generate-test-data-all 

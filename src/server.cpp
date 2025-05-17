@@ -105,24 +105,39 @@ namespace lsm
             std::lock_guard<std::mutex> lock(clients_mutex);
             for (auto &client : clients)
             {
+                std::cout << "Closing client socket: " << client.first << std::endl;
+                shutdown(client.first, SHUT_RDWR); // Properly shutdown the socket
                 close(client.first);
             }
         }
 
-        // Wait for the connection handling thread to finish
+        // Wait for the connection handling thread to finish with a short timeout
         if (connection_thread && connection_thread->joinable())
         {
-            connection_thread->join();
+            std::cout << "Waiting for connection thread to finish..." << std::endl;
+
+            // Use a detached thread to join with timeout
+            std::thread join_thread([this]()
+                                    {
+                if (connection_thread->joinable()) {
+                    connection_thread->join();
+                } });
+
+            // Wait briefly and detach
+            join_thread.detach();
+            std::this_thread::sleep_for(std::chrono::seconds(1));
         }
 
-        // Now wait for all client threads to finish
+        // IMPORTANT: Detach client threads instead of joining them
+        // This prevents the server from hanging if clients are stuck
         {
             std::lock_guard<std::mutex> lock(clients_mutex);
             for (auto &client : clients)
             {
+                std::cout << "Detaching client thread for socket: " << client.first << std::endl;
                 if (client.second && client.second->joinable())
                 {
-                    client.second->join();
+                    client.second->detach(); // Detach instead of join
                 }
             }
             clients.clear();
@@ -193,13 +208,21 @@ namespace lsm
             goto cleanup;
         }
 
+        std::cout << "Sent welcome message to client " << client_socket << " (" << welcome_sent << " bytes)" << std::endl;
+
         while (running.load())
         {
+            std::cout << "Waiting for command from client " << client_socket << "..." << std::endl;
             std::memset(buffer, 0, constants::BUFFER_SIZE);
             ssize_t bytes_read = recv(client_socket, buffer, constants::BUFFER_SIZE - 1, 0);
 
             if (bytes_read < 0)
             {
+                if (errno == EINTR && running.load())
+                {
+                    // Interrupted system call, try again if still running
+                    continue;
+                }
                 std::cerr << "Error receiving from client " << client_socket << ": " << strerror(errno) << std::endl;
                 break;
             }
@@ -210,8 +233,12 @@ namespace lsm
                 break;
             }
 
+            std::cout << "Read " << bytes_read << " bytes from client " << client_socket << std::endl;
+
             // Add received data to the command buffer
             command_buffer.append(buffer, bytes_read);
+
+            std::cout << "Command buffer now contains: '" << command_buffer << "'" << std::endl;
 
             // Process complete commands (delimited by \r\n)
             size_t delimiter_pos;
@@ -220,6 +247,8 @@ namespace lsm
                 // Extract the command
                 std::string command = command_buffer.substr(0, delimiter_pos);
                 command_buffer.erase(0, delimiter_pos + strlen(constants::CMD_DELIMITER));
+
+                std::cout << "Extracted command: '" << command << "', remaining buffer: '" << command_buffer << "'" << std::endl;
 
                 // Check for exit command
                 if (command == constants::CMD_EXIT)
@@ -231,58 +260,154 @@ namespace lsm
                 // Log received command
                 std::cout << "Received command from client " << client_socket << ": " << command << std::endl;
 
-                // Submit command to thread pool
-                auto future = thread_pool->enqueue([this, command, client_socket]()
-                                                   {
-                    std::string response = this->process_command(command);
-                    
-                    // Ensure we have some response even for empty results
-                    if (response.empty() && command[0] == 'g') {
-                        response = "Key not found";
-                    } else if (response.empty() && command[0] == 'r') {
-                        response = "No results in range";
-                    } else if (response.empty()) {
-                        response = "Operation completed";
+                // Special handling for bulk load commands, which can take a long time
+                if (command.length() > 0 && command[0] == constants::CMD_LOAD)
+                {
+                    // Send an initial acknowledgment
+                    std::string ack_msg = "Processing load command, this may take some time..." + std::string(constants::CMD_DELIMITER);
+                    ssize_t ack_sent = send(client_socket, ack_msg.c_str(), ack_msg.length(), 0);
+                    if (ack_sent < 0)
+                    {
+                        std::cerr << "Error sending load acknowledgment: " << strerror(errno) << std::endl;
                     }
-                    
-                    response += constants::CMD_DELIMITER;  // Add delimiter to response
-                    
-                    // For large responses, send in chunks to avoid blocking
-                    const size_t chunk_size = 4096;
+                    else
+                    {
+                        std::cout << "Sent load acknowledgment to client " << client_socket << " (" << ack_sent << " bytes)" << std::endl;
+                    }
+
+                    // Process the bulk load command
+                    std::cout << "Processing bulk load command: '" << command << "'" << std::endl;
+                    std::string response = this->process_command(command);
+
+                    // Format the response carefully for bulk load completion
+                    std::cout << "Command processed, response: '" << response << "'" << std::endl;
+
+                    // Ensure we have some response even for empty results
+                    if (response.empty())
+                    {
+                        response = "File loaded successfully";
+                        std::cout << "Empty response replaced with: '" << response << "'" << std::endl;
+                    }
+
+                    // Add an additional newline and delimiter for bulk load operations
+                    if (!response.empty() && response.back() != '\n')
+                    {
+                        response += '\n';
+                    }
+                    response += constants::CMD_DELIMITER;
+
+                    // Send the response with careful error handling
+                    std::cout << "Sending bulk load response to client " << client_socket << std::endl;
+                    std::cout << "Response length: " << response.length() << " bytes" << std::endl;
+
+                    // Send in chunks with careful error handling
+                    const size_t CHUNK_SIZE = 4096;
                     size_t bytes_sent = 0;
-                    const char* resp_data = response.c_str();
-                    size_t remaining = response.length();
-                    
-                    while (remaining > 0 && running.load()) {
-                        size_t to_send = std::min(chunk_size, remaining);
-                        ssize_t sent = send(client_socket, resp_data + bytes_sent, to_send, 0);
-                        
-                        if (sent < 0) {
-                            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                                // Socket buffer full, wait a bit and retry
-                                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    size_t total_bytes = response.length();
+
+                    while (bytes_sent < total_bytes)
+                    {
+                        size_t chunk_size = std::min(CHUNK_SIZE, total_bytes - bytes_sent);
+                        ssize_t sent = send(client_socket, response.c_str() + bytes_sent, chunk_size, 0);
+
+                        if (sent < 0)
+                        {
+                            if (errno == EINTR && running.load())
+                            {
+                                // Interrupted, try again
                                 continue;
                             }
-                            // Real error
-                            std::cerr << "Error sending response to client " << client_socket << ": " << strerror(errno) << std::endl;
-                            break;
+                            std::cerr << "Error sending bulk load response to client " << client_socket << ": "
+                                      << strerror(errno) << std::endl;
+                            goto cleanup;
                         }
-                        
-                        if (sent == 0) {
-                            // Connection closed
-                            std::cerr << "Connection closed while sending response to client " << client_socket << std::endl;
-                            break;
-                        }
-                        
+
                         bytes_sent += sent;
-                        remaining -= sent;
+                        std::cout << "Sent chunk of " << sent << " bytes, total sent: " << bytes_sent << "/" << total_bytes << std::endl;
                     }
-                    
-                    // Log completion for debugging
-                    std::cout << "Command processed and response sent to client " << client_socket << ": " << command.substr(0, 20) 
-                              << (command.length() > 20 ? "..." : "") << std::endl;
-                                    
-                    return true; });
+
+                    std::cout << "Bulk load response fully sent (" << bytes_sent << " bytes total)" << std::endl;
+
+                    // Check if client is still connected after bulk loading
+                    struct timeval tv;
+                    tv.tv_sec = 0;
+                    tv.tv_usec = 0;
+
+                    fd_set read_fds;
+                    FD_ZERO(&read_fds);
+                    FD_SET(client_socket, &read_fds);
+
+                    int select_result = select(client_socket + 1, &read_fds, NULL, NULL, &tv);
+                    if (select_result > 0)
+                    {
+                        // Socket has data or has been closed
+                        char check_buffer[1];
+                        ssize_t check_bytes = recv(client_socket, check_buffer, 1, MSG_PEEK);
+                        if (check_bytes == 0)
+                        {
+                            std::cout << "Client " << client_socket << " disconnected after bulk load" << std::endl;
+                            goto cleanup;
+                        }
+                    }
+                }
+                else
+                {
+                    // Regular (non-bulk-load) command processing
+                    std::cout << "Processing command: '" << command << "'" << std::endl;
+                    std::string response = this->process_command(command);
+                    std::cout << "Command processed, response: '" << response << "'" << std::endl;
+
+                    // Ensure we have some response even for empty results
+                    if (response.empty())
+                    {
+                        if (command[0] == constants::CMD_GET)
+                        {
+                            response = "Key not found";
+                        }
+                        else if (command[0] == constants::CMD_RANGE)
+                        {
+                            response = "No results in range";
+                        }
+                        else
+                        {
+                            response = "Operation completed";
+                        }
+                        std::cout << "Empty response replaced with: '" << response << "'" << std::endl;
+                    }
+
+                    // Add delimiter to response if it doesn't have one
+                    if (response.find(constants::CMD_DELIMITER) == std::string::npos)
+                    {
+                        response += constants::CMD_DELIMITER;
+                    }
+
+                    // Send the response
+                    std::cout << "Sending response to client " << client_socket << " for command: " << command << std::endl;
+                    std::cout << "Response length: " << response.length() << " bytes, content: '" << response << "'" << std::endl;
+
+                    // Send in smaller chunks to prevent issues with large responses
+                    const size_t CHUNK_SIZE = 4096;
+                    size_t bytes_sent = 0;
+                    size_t total_bytes = response.length();
+
+                    while (bytes_sent < total_bytes)
+                    {
+                        size_t chunk_size = std::min(CHUNK_SIZE, total_bytes - bytes_sent);
+                        ssize_t sent = send(client_socket, response.c_str() + bytes_sent, chunk_size, 0);
+
+                        if (sent < 0)
+                        {
+                            std::cerr << "Error sending response to client " << client_socket << ": "
+                                      << strerror(errno) << std::endl;
+                            goto cleanup;
+                        }
+
+                        bytes_sent += sent;
+                        std::cout << "Sent chunk of " << sent << " bytes, total sent: " << bytes_sent << "/" << total_bytes << std::endl;
+                    }
+
+                    std::cout << "Response sent successfully (" << bytes_sent << " bytes total)" << std::endl;
+                }
             }
         }
 
@@ -356,11 +481,104 @@ namespace lsm
             return "Disconnecting...";
         }
 
+        case constants::CMD_LOAD: // Special handling for load command
+        {
+            try
+            {
+                std::cout << "Processing LOAD command - this may take a while..." << std::endl;
+
+                // Extract filepath from command
+                std::string filepath;
+                size_t start_pos = command.find_first_of("\"'");
+                if (start_pos == std::string::npos)
+                {
+                    return "Error: Load command requires filepath in quotes";
+                }
+
+                size_t end_pos = command.find_first_of("\"'", start_pos + 1);
+                if (end_pos == std::string::npos)
+                {
+                    return "Error: Unclosed quote in filepath";
+                }
+
+                filepath = command.substr(start_pos + 1, end_pos - start_pos - 1);
+                std::cout << "Loading file: " << filepath << std::endl;
+
+                // Forward to LSM adapter for actual processing
+                std::string result = LSMAdapter::get_instance().process_command(command);
+                std::cout << "Load command complete for " << filepath << std::endl;
+
+                // Return a more detailed success message
+                if (result.empty() || result.find("successfully") != std::string::npos)
+                {
+                    std::stringstream ss;
+                    ss << "File loaded successfully: " << filepath << std::endl;
+                    ss << "Loaded data is now available for queries.";
+                    return ss.str();
+                }
+                return result;
+            }
+            catch (const std::exception &e)
+            {
+                std::cerr << "Load command error: " << e.what() << std::endl;
+                return std::string("Error loading file: ") + e.what();
+            }
+        }
+
+        case constants::CMD_STATS: // Special handling for stats command
+        {
+            try
+            {
+                // Log that we're getting stats
+                std::cout << "Generating stats - this may take a moment..." << std::endl;
+
+                // Get stats directly (bypass LSM adapter to debug)
+                std::stringstream ss;
+                ss << "LSM-Tree Statistics Summary:" << std::endl;
+                ss << "==========================" << std::endl;
+                ss << "Buffer Size: " << constants::BUFFER_SIZE_BYTES << " bytes" << std::endl;
+                ss << "Size Ratio: " << constants::SIZE_RATIO << std::endl;
+                ss << "Level Count: " << constants::INITIAL_MAX_LEVEL << std::endl;
+                ss << "==========================" << std::endl;
+
+                // Try to get detailed stats from the LSM adapter
+                try
+                {
+                    std::string lsm_stats = LSMAdapter::get_instance().process_command(command);
+                    if (!lsm_stats.empty())
+                    {
+                        ss << "Detailed stats:" << std::endl
+                           << lsm_stats;
+                    }
+                    else
+                    {
+                        ss << "No detailed stats available - tree may be empty" << std::endl;
+                    }
+                }
+                catch (const std::exception &e)
+                {
+                    ss << "Error getting detailed stats: " << e.what() << std::endl;
+                }
+
+                std::string result = ss.str();
+                std::cout << "Generated stats successfully (" << result.length() << " bytes)" << std::endl;
+                return result;
+            }
+            catch (const std::exception &e)
+            {
+                return std::string("Error generating stats: ") + e.what();
+            }
+        }
+
         default:
             // Use the LSM adapter to process all other commands
             try
             {
-                return LSMAdapter::get_instance().process_command(command);
+                // Log that we're sending the command to the LSM adapter
+                std::cout << "Forwarding command to LSM adapter: " << command << std::endl;
+                std::string result = LSMAdapter::get_instance().process_command(command);
+                std::cout << "LSM adapter processed command, result length: " << result.length() << " bytes" << std::endl;
+                return result;
             }
             catch (const std::exception &e)
             {

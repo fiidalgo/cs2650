@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <iostream>
+#include "../include/lsm_adapter.h"
 
 namespace fs = std::filesystem;
 
@@ -65,24 +66,32 @@ namespace lsm
 
     std::optional<int64_t> Run::get(int64_t key) const
     {
-        // Check bloom filter first
+        // If bloom filter is available, check it first
         if (bloom_filter && !bloom_filter->might_contain(key))
         {
-            return std::nullopt; // Definitely not in the set
+            return std::nullopt;
         }
 
-        // Use fence pointers to find where to start looking
-        size_t offset = fence_pointers ? fence_pointers->find_offset(key) : 0;
+        // Use fence pointers to find the approximate position
+        size_t start_pos = 0;
+        if (fence_pointers)
+        {
+            auto pos = fence_pointers->find_offset(key);
+            start_pos = pos;
+        }
 
-        // Open the file
+        // Binary search within the block to find the exact position
         std::ifstream file(get_data_filename(), std::ios::binary);
         if (!file)
         {
             throw std::runtime_error("Failed to open run file: " + get_data_filename());
         }
 
-        // Seek to the offset
-        file.seekg(offset);
+        // Track disk read I/O
+        LSMAdapter::get_instance().increment_read_io();
+
+        // Set file position to the estimated start based on fence pointers
+        file.seekg(start_pos);
 
         // Read pairs until we find the key or reach the end
         int64_t file_key, value;
@@ -128,6 +137,9 @@ namespace lsm
         {
             throw std::runtime_error("Failed to open run file: " + get_data_filename());
         }
+
+        // Track disk read I/O
+        LSMAdapter::get_instance().increment_read_io();
 
         // Seek to the start offset
         file.seekg(offsets.first);
@@ -301,6 +313,9 @@ namespace lsm
         {
             throw std::runtime_error("Failed to create run file: " + get_data_filename());
         }
+
+        // Track disk write I/O
+        LSMAdapter::get_instance().increment_write_io();
 
         // Write all pairs
         for (const auto &pair : data)

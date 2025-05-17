@@ -5,6 +5,7 @@
 #include <thread>
 #include <cstddef>
 #include <cstdint>
+#include <atomic>
 
 namespace lsm
 {
@@ -16,13 +17,18 @@ namespace lsm
         //======================================================================
 
         // Size configurations
-        constexpr size_t BUFFER_SIZE_BYTES = 4 * 1024 * 1024; // 4MB
+        constexpr size_t DEFAULT_BUFFER_SIZE_BYTES = 4 * 1024 * 1024; // 4MB
+        inline std::atomic<size_t> BUFFER_SIZE_BYTES = DEFAULT_BUFFER_SIZE_BYTES;
+
         constexpr size_t SIZE_RATIO = 4;
         constexpr int INITIAL_MAX_LEVEL = 6;
 
         // Compaction parameters
         constexpr int TIERING_THRESHOLD = 4;       // Level 1: Trigger after 4 runs
         constexpr int LAZY_LEVELING_THRESHOLD = 3; // Levels 2-4: Trigger after 3 runs
+
+        // Compaction control flag
+        inline std::atomic<bool> COMPACTION_ENABLED = true;
 
         // File and directory paths
         inline const std::string DATA_DIRECTORY = "data";

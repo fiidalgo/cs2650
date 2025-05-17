@@ -145,6 +145,8 @@ namespace lsm
 
     void LSMTree::put(int64_t key, int64_t value)
     {
+        auto start_time = std::chrono::high_resolution_clock::now();
+
         std::lock_guard<std::mutex> lock(tree_mutex);
 
         log_debug("PUT operation: Inserting key=" + std::to_string(key) +
@@ -160,18 +162,28 @@ namespace lsm
         if (buffer->is_full())
         {
             log_debug("PUT: Buffer is full (>= " +
-                      std::to_string(constants::BUFFER_SIZE_BYTES) + " bytes), flushing to disk");
+                      std::to_string(constants::BUFFER_SIZE_BYTES.load()) + " bytes), flushing to disk");
             flush_buffer();
         }
         else
         {
             log_debug("PUT: Buffer not full yet, remaining capacity: " +
-                      std::to_string(constants::BUFFER_SIZE_BYTES - buffer->size_bytes()) + " bytes");
+                      std::to_string(constants::BUFFER_SIZE_BYTES.load() - buffer->size_bytes()) + " bytes");
         }
+
+        // Track write timing
+        auto end_time = std::chrono::high_resolution_clock::now();
+        double elapsed_ms = std::chrono::duration<double, std::milli>(end_time - start_time).count();
+
+        // Update write metrics
+        write_count++;
+        total_write_time_ms.store(total_write_time_ms.load() + elapsed_ms);
     }
 
     std::optional<int64_t> LSMTree::get(int64_t key)
     {
+        auto start_time = std::chrono::high_resolution_clock::now();
+
         log_debug("GET operation: Searching for key=" + std::to_string(key));
 
         // First check the buffer
@@ -179,6 +191,15 @@ namespace lsm
         if (buffer_result.has_value())
         {
             log_debug("GET: Found key in buffer, value=" + std::to_string(*buffer_result));
+
+            // Track read timing for buffer hit
+            auto end_time = std::chrono::high_resolution_clock::now();
+            double elapsed_ms = std::chrono::duration<double, std::milli>(end_time - start_time).count();
+
+            // Update read metrics
+            read_count++;
+            total_read_time_ms.store(total_read_time_ms.load() + elapsed_ms);
+
             return buffer_result;
         }
         log_debug("GET: Key not found in buffer, checking disk levels");
@@ -213,6 +234,15 @@ namespace lsm
                     log_debug("GET: Found key in run " + std::to_string(run_idx) +
                               " of level " + std::to_string(level_num) +
                               ", value=" + std::to_string(*result));
+
+                    // Track read timing for disk hit
+                    auto end_time = std::chrono::high_resolution_clock::now();
+                    double elapsed_ms = std::chrono::duration<double, std::milli>(end_time - start_time).count();
+
+                    // Update read metrics
+                    read_count++;
+                    total_read_time_ms.store(total_read_time_ms.load() + elapsed_ms);
+
                     return result;
                 }
                 log_debug("GET: Key not found in run " + std::to_string(run_idx) +
@@ -221,6 +251,15 @@ namespace lsm
         }
 
         log_debug("GET: Key not found in any level");
+
+        // Track read timing for miss
+        auto end_time = std::chrono::high_resolution_clock::now();
+        double elapsed_ms = std::chrono::duration<double, std::milli>(end_time - start_time).count();
+
+        // Update read metrics (even for misses)
+        read_count++;
+        total_read_time_ms.store(total_read_time_ms.load() + elapsed_ms);
+
         // Key not found
         return std::nullopt;
     }
@@ -360,6 +399,10 @@ namespace lsm
 
         out << "Logical Pairs: " << total_pairs << "\n";
 
+        // I/O Statistics
+        out << "Read I/Os: " << read_io_count.load() << "\n";
+        out << "Write I/Os: " << write_io_count.load() << "\n";
+
         // Count keys in each level
         out << "LVL0: " << buffer->element_count();
         for (size_t i = 1; i < levels.size(); ++i)
@@ -486,16 +529,17 @@ namespace lsm
 
     void LSMTree::flush_buffer()
     {
-        log_debug("Flushing buffer to disk");
-
-        // Get all pairs from buffer in sorted order
-        auto pairs = buffer->get_all_sorted();
-
-        if (pairs.empty())
+        if (buffer->element_count() == 0)
         {
-            log_debug("Buffer is empty, nothing to flush");
+            log_debug("Flush called on empty buffer, nothing to do");
             return;
         }
+
+        log_debug("Flushing buffer with " + std::to_string(buffer->element_count()) +
+                  " elements (" + std::to_string(buffer->size_bytes()) + " bytes)");
+
+        // Get all pairs from the buffer
+        auto pairs = buffer->get_all_sorted();
 
         // Create a new run in level 1
         int level = 1;
@@ -509,7 +553,7 @@ namespace lsm
         buffer->clear();
 
         // Check if level 1 needs compaction after the flush
-        if (levels[level]->needs_compaction())
+        if (constants::COMPACTION_ENABLED.load() && levels[level]->needs_compaction())
         {
             log_debug("Level " + std::to_string(level) + " needs compaction after buffer flush");
             perform_compaction(level);
@@ -518,6 +562,13 @@ namespace lsm
 
     void LSMTree::perform_compaction(int level)
     {
+        // Skip compaction if disabled
+        if (!constants::COMPACTION_ENABLED.load())
+        {
+            log_debug("Compaction is disabled, skipping compaction of level " + std::to_string(level));
+            return;
+        }
+
         log_debug("Performing compaction on level " + std::to_string(level));
 
         // Get the compaction strategy for this level
@@ -808,7 +859,7 @@ namespace lsm
     {
         // Calculate which level this size belongs to
         // Level capacity = BUFFER_SIZE * SIZE_RATIO^(level-1)
-        double buffer_size = static_cast<double>(constants::BUFFER_SIZE_BYTES);
+        double buffer_size = static_cast<double>(constants::BUFFER_SIZE_BYTES.load());
         double size_ratio = static_cast<double>(constants::SIZE_RATIO);
 
         // Start at level 1
@@ -976,6 +1027,341 @@ namespace lsm
         default:
             return "UNKNOWN";
         }
+    }
+
+    // Buffer size management
+    size_t LSMTree::get_buffer_size() const
+    {
+        return constants::BUFFER_SIZE_BYTES.load();
+    }
+
+    void LSMTree::set_buffer_size(size_t new_size)
+    {
+        log_debug("Changing buffer size from " + std::to_string(constants::BUFFER_SIZE_BYTES.load()) +
+                  " to " + std::to_string(new_size) + " bytes");
+        constants::BUFFER_SIZE_BYTES.store(new_size);
+    }
+
+    // Compaction control
+    bool LSMTree::is_compaction_enabled() const
+    {
+        return constants::COMPACTION_ENABLED.load();
+    }
+
+    void LSMTree::set_compaction_enabled(bool enabled)
+    {
+        log_debug(enabled ? "Enabling compaction" : "Disabling compaction");
+        constants::COMPACTION_ENABLED.store(enabled);
+    }
+
+    // Optimized bulk loading
+    void LSMTree::bulk_load_file(const std::string &filepath)
+    {
+        // Remember original settings to restore later
+        size_t original_buffer_size = get_buffer_size();
+        bool original_compaction_state = is_compaction_enabled();
+
+        // Create a unique_lock instead of lock_guard so we can manually unlock it
+        std::unique_lock<std::mutex> lock(tree_mutex);
+
+        try
+        {
+            log_debug("Starting bulk load from file: " + filepath);
+
+            // 1. Optimize settings for loading
+            set_buffer_size(100 * 1024 * 1024); // 100MB buffer
+            set_compaction_enabled(false);      // Disable compaction during load
+
+            // 2. Open the input file
+            std::ifstream file(filepath, std::ios::binary);
+            if (!file)
+            {
+                throw std::runtime_error("Failed to open file: " + filepath);
+            }
+
+            // 3. First pass: count pairs and calculate total size
+            std::ifstream count_file(filepath, std::ios::binary);
+            size_t total_pairs = 0;
+            int64_t key, value;
+            while (count_file.read(reinterpret_cast<char *>(&key), sizeof(key)) &&
+                   count_file.read(reinterpret_cast<char *>(&value), sizeof(value)))
+            {
+                total_pairs++;
+            }
+
+            log_debug("Bulk loading " + std::to_string(total_pairs) + " pairs from file");
+            size_t data_size_bytes = total_pairs * sizeof(KeyValuePair);
+
+            // 4. Load data in large chunks directly into memory
+            // We can now pre-allocate memory for all pairs
+            std::vector<KeyValuePair> all_pairs;
+            all_pairs.reserve(total_pairs);
+
+            // Reset file position
+            file.clear();
+            file.seekg(0);
+
+            // Read all pairs
+            while (file.read(reinterpret_cast<char *>(&key), sizeof(key)) &&
+                   file.read(reinterpret_cast<char *>(&value), sizeof(value)))
+            {
+                all_pairs.emplace_back(key, value);
+            }
+
+            // 5. Sort all pairs
+            log_debug("Sorting " + std::to_string(all_pairs.size()) + " pairs");
+            std::sort(all_pairs.begin(), all_pairs.end());
+
+            // 6. Deduplicate to keep only the latest value for each key
+            if (all_pairs.size() > 1)
+            {
+                std::vector<KeyValuePair> deduplicated;
+                deduplicated.reserve(all_pairs.size());
+
+                int64_t current_key = all_pairs[0].key;
+                int64_t current_value = all_pairs[0].value;
+
+                for (size_t i = 1; i < all_pairs.size(); ++i)
+                {
+                    if (all_pairs[i].key == current_key)
+                    {
+                        // Found a duplicate, update to newer value
+                        current_value = all_pairs[i].value;
+                    }
+                    else
+                    {
+                        // Found a new key, store the previous one if not a tombstone
+                        if (current_value != INT64_MIN)
+                        {
+                            deduplicated.emplace_back(current_key, current_value);
+                        }
+                        // Start tracking the new key
+                        current_key = all_pairs[i].key;
+                        current_value = all_pairs[i].value;
+                    }
+                }
+
+                // Add the last key if not a tombstone
+                if (current_value != INT64_MIN)
+                {
+                    deduplicated.emplace_back(current_key, current_value);
+                }
+
+                // Replace with deduplicated data
+                all_pairs = std::move(deduplicated);
+            }
+
+            // 7. Distribute data across levels working backwards
+            size_t data_size_mb = data_size_bytes / (1024 * 1024); // Convert to MB for easier logging
+            double default_buffer_mb = constants::DEFAULT_BUFFER_SIZE_BYTES / (1024.0 * 1024.0);
+            double size_ratio = static_cast<double>(constants::SIZE_RATIO);
+
+            log_debug("Distributing " + std::to_string(data_size_mb) + "MB of data across levels");
+
+            // Calculate capacity for each level in MB
+            std::vector<double> level_capacities_mb;
+            for (int level = 1; level <= max_level; level++)
+            {
+                double capacity = default_buffer_mb * std::pow(size_ratio, level - 1);
+                level_capacities_mb.push_back(capacity);
+                log_debug("Level " + std::to_string(level) + " capacity: " +
+                          std::to_string(capacity) + "MB");
+            }
+
+            // Find the lowest level that can hold all the data
+            int target_level = 1;
+            while (target_level <= max_level && level_capacities_mb[target_level - 1] < data_size_mb)
+            {
+                target_level++;
+            }
+
+            // If we couldn't find a level with enough capacity, use the highest level
+            if (target_level > max_level)
+            {
+                target_level = max_level;
+            }
+
+            log_debug("Lowest level that can hold all data: " + std::to_string(target_level));
+
+            // Calculate level distribution working backwards from target_level
+            std::vector<double> level_data_mb(max_level, 0.0);
+            double remaining_data_mb = data_size_mb;
+
+            for (int level = target_level; level > 0 && remaining_data_mb > 0; level--)
+            {
+                // Get capacity of the previous level (for flushing calculation)
+                double prev_level_capacity = (level > 1) ? level_capacities_mb[level - 2] : default_buffer_mb;
+
+                // Calculate how many times we would have flushed from the previous level
+                int flush_count = static_cast<int>(remaining_data_mb / prev_level_capacity);
+                double data_for_level = flush_count * prev_level_capacity;
+
+                // Don't allocate more than the remaining data
+                data_for_level = std::min(data_for_level, remaining_data_mb);
+
+                // Store the allocation
+                level_data_mb[level - 1] = data_for_level;
+                remaining_data_mb -= data_for_level;
+
+                log_debug("Level " + std::to_string(level) + " gets " +
+                          std::to_string(data_for_level) + "MB (" +
+                          std::to_string(flush_count) + " flushes from level " +
+                          std::to_string(level - 1) + ")");
+            }
+
+            // Distribute any remaining data to level 1
+            if (remaining_data_mb > 0)
+            {
+                level_data_mb[0] += remaining_data_mb;
+                log_debug("Level 1 gets additional " + std::to_string(remaining_data_mb) +
+                          "MB of remaining data");
+            }
+
+            // Distribute the actual pairs according to the calculated allocations
+            size_t pairs_per_mb = all_pairs.size() / data_size_mb;
+            size_t start_idx = 0;
+
+            for (int level = 1; level <= max_level; level++)
+            {
+                if (level_data_mb[level - 1] <= 0)
+                {
+                    continue; // Skip levels with no allocation
+                }
+
+                // Calculate number of pairs for this level
+                size_t pair_count = static_cast<size_t>(level_data_mb[level - 1] * pairs_per_mb);
+
+                // Ensure we don't exceed available pairs
+                pair_count = std::min(pair_count, all_pairs.size() - start_idx);
+
+                if (pair_count > 0)
+                {
+                    // Create a vector slice for this level
+                    std::vector<KeyValuePair> level_pairs(
+                        all_pairs.begin() + start_idx,
+                        all_pairs.begin() + start_idx + pair_count);
+
+                    // Create run for this level
+                    size_t run_id = levels[level]->run_count();
+                    double fpr = calculate_fpr_for_level(level);
+
+                    log_debug("Creating run with " + std::to_string(level_pairs.size()) +
+                              " pairs in level " + std::to_string(level) +
+                              " (" + std::to_string(level_data_mb[level - 1]) + "MB)");
+
+                    auto new_run = std::make_unique<Run>(level_pairs, level, run_id, fpr);
+                    levels[level]->add_run(std::move(new_run));
+
+                    // Update start index for next level
+                    start_idx += pair_count;
+                }
+            }
+
+            if (start_idx < all_pairs.size())
+            {
+                size_t remaining_pairs = all_pairs.size() - start_idx;
+                log_debug("Warning: " + std::to_string(remaining_pairs) +
+                          " pairs weren't distributed to any level");
+
+                // Put remaining pairs in the highest level that received data
+                int highest_used_level = max_level;
+                while (highest_used_level > 0 && level_data_mb[highest_used_level - 1] <= 0)
+                {
+                    highest_used_level--;
+                }
+
+                if (highest_used_level > 0)
+                {
+                    std::vector<KeyValuePair> remaining_level_pairs(
+                        all_pairs.begin() + start_idx,
+                        all_pairs.end());
+
+                    size_t run_id = levels[highest_used_level]->run_count();
+                    double fpr = calculate_fpr_for_level(highest_used_level);
+
+                    log_debug("Adding remaining " + std::to_string(remaining_level_pairs.size()) +
+                              " pairs to level " + std::to_string(highest_used_level));
+
+                    auto new_run = std::make_unique<Run>(remaining_level_pairs, highest_used_level, run_id, fpr);
+                    levels[highest_used_level]->add_run(std::move(new_run));
+                }
+            }
+
+            log_debug("Bulk load completed successfully");
+
+            // Unlock the mutex before starting compaction
+            // This ensures other threads can access the tree while compaction runs
+            lock.unlock();
+
+            // 9. Perform a full compaction after load is complete
+            set_compaction_enabled(true);
+            compact();
+        }
+        catch (const std::exception &e)
+        {
+            // Restore original settings before propagating the exception
+            set_buffer_size(original_buffer_size);
+            set_compaction_enabled(original_compaction_state);
+
+            // Make sure to unlock if we're still holding the lock
+            if (lock.owns_lock())
+            {
+                lock.unlock();
+            }
+
+            log_debug("Bulk load failed: " + std::string(e.what()));
+            throw;
+        }
+
+        // 10. Restore original settings
+        set_buffer_size(original_buffer_size);
+
+        // No need to unlock here - either we've already unlocked above
+        // or the exception handler did it
+
+        log_debug("Bulk load fully completed, ready for normal operations");
+    }
+
+    // I/O statistics tracking
+    void LSMTree::increment_read_io() { read_io_count++; }
+    void LSMTree::increment_write_io() { write_io_count++; }
+    size_t LSMTree::get_read_io_count() const { return read_io_count.load(); }
+    size_t LSMTree::get_write_io_count() const { return write_io_count.load(); }
+    void LSMTree::reset_io_stats()
+    {
+        read_io_count.store(0);
+        write_io_count.store(0);
+    }
+
+    // Operation timing metrics implementation
+    double LSMTree::get_avg_read_time_ms() const
+    {
+        size_t count = read_count.load();
+        return count > 0 ? total_read_time_ms.load() / count : 0.0;
+    }
+
+    double LSMTree::get_avg_write_time_ms() const
+    {
+        size_t count = write_count.load();
+        return count > 0 ? total_write_time_ms.load() / count : 0.0;
+    }
+
+    size_t LSMTree::get_read_count() const
+    {
+        return read_count.load();
+    }
+
+    size_t LSMTree::get_write_count() const
+    {
+        return write_count.load();
+    }
+
+    void LSMTree::reset_timing_stats()
+    {
+        read_count.store(0);
+        write_count.store(0);
+        total_read_time_ms.store(0.0);
+        total_write_time_ms.store(0.0);
     }
 
 } // namespace lsm

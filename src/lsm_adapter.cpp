@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <algorithm>
 #include <filesystem>
+#include <iomanip>
 
 namespace fs = std::filesystem;
 
@@ -44,66 +45,65 @@ namespace lsm
             return "Error: Empty command";
         }
 
-        // Get command code (first character)
-        char cmd_code = command[0];
+        char cmd_type = command[0];
 
-        // Process based on command code
-        try
+        switch (cmd_type)
         {
-            switch (cmd_code)
-            {
-            case 'p':
-            {
-                // Put command
-                auto tokens = tokenize(command);
-                return handle_put(tokens);
-            }
+        case 'p':
+        {
+            // Put command
+            auto tokens = tokenize(command);
+            return handle_put(tokens);
+        }
 
-            case 'g':
-            {
-                // Get command
-                auto tokens = tokenize(command);
-                return handle_get(tokens);
-            }
+        case 'g':
+        {
+            // Get command
+            auto tokens = tokenize(command);
+            return handle_get(tokens);
+        }
 
-            case 'r':
+        case 'r':
+        {
+            if (command.size() == 1 || command[1] == ' ')
             {
-                // Range command
+                // Single 'r' is reset stats
+                return handle_reset_stats();
+            }
+            else
+            {
+                // "range" command would be longer and start with 'r'
                 auto tokens = tokenize(command);
                 return handle_range(tokens);
             }
-
-            case 'd':
-            {
-                // Delete command
-                auto tokens = tokenize(command);
-                return handle_delete(tokens);
-            }
-
-            case 'l':
-            {
-                // Load command
-                return handle_load(command);
-            }
-
-            case 's':
-            {
-                // Stats command
-                auto tokens = tokenize(command);
-                if (tokens.size() > 1)
-                {
-                    return "Error: Stats command takes no arguments";
-                }
-                return handle_stats();
-            }
-
-            default:
-                return "Error: Unknown command";
-            }
         }
-        catch (const std::exception &e)
+
+        case 'd':
         {
-            return std::string("Error: ") + e.what();
+            // Delete command
+            auto tokens = tokenize(command);
+            return handle_delete(tokens);
+        }
+
+        case 'l':
+        {
+            // Load command
+            return handle_load(command);
+        }
+
+        case 's':
+        {
+            // Stats command
+            auto tokens = tokenize(command);
+            if (tokens.size() > 1)
+            {
+                return "Error: Stats command takes no arguments";
+            }
+            return handle_stats();
+        }
+
+        default:
+            return "Error: Unknown command";
         }
     }
 
@@ -246,12 +246,14 @@ namespace lsm
 
         try
         {
-            tree->load_file(filepath);
+            // Use the optimized bulk loading method instead of the regular load
+            tree->bulk_load_file(filepath);
+            std::cout << "Bulk load complete, returning success response" << std::endl;
             return "File loaded successfully: " + filepath;
         }
         catch (const std::exception &e)
         {
-            return std::string("Error loading file: ") + e.what();
+            return "Error loading file: " + std::string(e.what());
         }
     }
 
@@ -259,6 +261,46 @@ namespace lsm
     {
         // Use a limited size stringstream to avoid extremely large responses
         std::stringstream ss;
+
+        // Add performance statistics section
+        ss << "===== Performance Metrics =====" << std::endl;
+
+        // Total operation counts
+        ss << "Total Operations:" << std::endl;
+        ss << "  Reads: " << get_read_count() << std::endl;
+        ss << "  Writes: " << get_write_count() << std::endl;
+
+        // Average operation times
+        ss << "Average Operation Time:" << std::endl;
+        ss << "  Reads: " << std::fixed << std::setprecision(3) << get_avg_read_time_ms() << " ms/op" << std::endl;
+        ss << "  Writes: " << std::fixed << std::setprecision(3) << get_avg_write_time_ms() << " ms/op" << std::endl;
+
+        // Operation throughput (ops/sec)
+        double read_throughput = get_avg_read_time_ms() > 0 ? 1000.0 / get_avg_read_time_ms() : 0;
+        double write_throughput = get_avg_write_time_ms() > 0 ? 1000.0 / get_avg_write_time_ms() : 0;
+
+        ss << "Operation Throughput:" << std::endl;
+        ss << "  Reads: " << std::fixed << std::setprecision(2) << read_throughput << " ops/sec" << std::endl;
+        ss << "  Writes: " << std::fixed << std::setprecision(2) << write_throughput << " ops/sec" << std::endl;
+
+        // Add I/O statistics section
+        ss << std::endl
+           << "===== I/O Statistics =====" << std::endl;
+        ss << "Read I/Os: " << get_read_io_count() << std::endl;
+        ss << "Write I/Os: " << get_write_io_count() << std::endl;
+
+        // I/O per operation (efficiency metrics)
+        double io_per_read = get_read_count() > 0 ? static_cast<double>(get_read_io_count()) / get_read_count() : 0;
+        double io_per_write = get_write_count() > 0 ? static_cast<double>(get_write_io_count()) / get_write_count() : 0;
+
+        ss << "I/O Efficiency:" << std::endl;
+        ss << "  I/O per read operation: " << std::fixed << std::setprecision(2) << io_per_read << std::endl;
+        ss << "  I/O per write operation: " << std::fixed << std::setprecision(2) << io_per_write << std::endl;
+
+        ss << "=========================" << std::endl
+           << std::endl;
+
+        // Then add the full tree stats as before
         tree->print_stats(ss);
 
         // Get the string and check its size
@@ -280,6 +322,13 @@ namespace lsm
         }
 
         return stats;
+    }
+
+    std::string LSMAdapter::handle_reset_stats()
+    {
+        reset_io_stats();
+        reset_timing_stats();
+        return "Statistics reset successfully";
     }
 
     std::vector<std::string> LSMAdapter::tokenize(const std::string &command) const
